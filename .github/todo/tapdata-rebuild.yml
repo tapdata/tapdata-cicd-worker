@@ -1,0 +1,138 @@
+name: TapData Rebuild
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_env:
+        description: 'Target environment for rebuild'
+        required: true
+        type: choice
+        options:
+          - dev
+          - sit
+          - lpt
+          - aat
+          - prod
+      task_names:
+        description: 'Task names to rebuild (comma separated)'
+        required: true
+        type: string
+      reset_reason:
+        description: 'Reason for rebuild'
+        required: true
+        type: string
+      need_drop_table:
+        description: 'Whether to drop tables'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  TARGET_ENV: ${{ inputs.target_env }}
+
+jobs:
+  # ============================================================
+  # Job 1: Preparation Phase
+  # ============================================================
+  preparation:
+    name: Preparation Phase
+    runs-on: self-hosted
+    timeout-minutes: 5
+    outputs:
+      tapdata_token: ${{ steps.get_token.outputs.tapdata_token }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Validate Input Parameters
+        run: bash scripts/tapdata-rebuild/validate-inputs.sh
+        env:
+          TARGET_ENV: ${{ inputs.target_env }}
+          TASK_NAMES: ${{ inputs.task_names }}
+          RESET_REASON: ${{ inputs.reset_reason }}
+
+      - name: Get TapData Token
+        id: get_token
+        run: bash scripts/common/get-token.sh
+        env:
+          TARGET_ENV: ${{ inputs.target_env }}
+          TAPDATA_ACCESSCODE: ${{ secrets[format('{0}_TAPDATA_ACCESSCODE', inputs.target_env)] }}
+
+  # ============================================================
+  # Job 2: List Rebuild Tasks & Approval
+  # ============================================================
+  rebuild-approval:
+    name: List Rebuild Tasks & Approval
+    runs-on: self-hosted
+    timeout-minutes: 60
+    needs: [preparation]
+    environment: rebuild-approval
+    outputs:
+      rebuild_task_list: ${{ steps.list_tasks.outputs.rebuild_task_list }}
+      rebuild_task_order: ${{ steps.list_tasks.outputs.rebuild_task_order }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: List Rebuild Tasks
+        id: list_tasks
+        run: bash scripts/tapdata-rebuild/list-rebuild-tasks.sh
+        env:
+          TASK_NAMES: ${{ inputs.task_names }}
+          RESET_REASON: ${{ inputs.reset_reason }}
+          NEED_DROP_TABLE: ${{ inputs.need_drop_table }}
+
+  # ============================================================
+  # Job 3: Stop & Reset Tasks
+  # ============================================================
+  stop-and-reset:
+    name: Stop & Reset Tasks
+    runs-on: self-hosted
+    timeout-minutes: 15
+    needs: [preparation, rebuild-approval]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Stop Tasks
+        run: bash scripts/common/stop-tasks.sh
+        env:
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TARGET_ENV: ${{ inputs.target_env }}
+          TASK_NAMES: ${{ inputs.task_names }}
+
+      - name: Reset Tasks
+        run: bash scripts/tapdata-rebuild/reset-tasks.sh
+        env:
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TARGET_ENV: ${{ inputs.target_env }}
+          TASK_NAMES: ${{ inputs.task_names }}
+          NEED_DROP_TABLE: ${{ inputs.need_drop_table }}
+
+  # ============================================================
+  # Job 4: Run Rebuild Tasks
+  # ============================================================
+  run-rebuild:
+    name: Run Rebuild Tasks
+    runs-on: self-hosted
+    timeout-minutes: 60
+    needs: [preparation, rebuild-approval, stop-and-reset]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Run Tasks in Order
+        run: bash scripts/tapdata-rebuild/run-tasks.sh
+        env:
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TARGET_ENV: ${{ inputs.target_env }}
+          TASK_NAMES: ${{ inputs.task_names }}
+          REBUILD_TASK_ORDER: ${{ needs.rebuild-approval.outputs.rebuild_task_order }}

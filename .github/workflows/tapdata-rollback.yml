@@ -1,0 +1,371 @@
+name: TapData Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_env:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - sit
+          - lpt
+          - aat
+          - prod
+      last_stable_tag:
+        description: 'Tag to rollback to (required)'
+        required: true
+        type: string
+      project:
+        description: 'Project name (matches the {project}_tapdata_export/ directory prefix)'
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      target_env:
+        description: 'Target environment'
+        required: true
+        type: string
+      last_stable_tag:
+        description: 'Tag to rollback to (required)'
+        required: true
+        type: string
+      project:
+        description: 'Project name'
+        required: true
+        type: string
+      caller_repo:
+        description: 'Caller tenant repo full name, e.g. your-org/your-tenant-repo (leave empty in single-repo mode)'
+        required: false
+        type: string
+        default: ''
+      worker_repo:
+        description: 'Worker repo full name, e.g. your-org/tapdata-cicd-worker (used to checkout worker scripts)'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      GH_DEPLOY_TOKEN:
+        required: true
+
+env:
+  ROLLBACK_DIR: /tmp/tapdata-rollback-${{ github.run_id }}
+  PROJECT: ${{ inputs.project }}
+
+jobs:
+  # ============================================================
+  # Job 1: Preparation Phase
+  # ============================================================
+  preparation:
+    name: Preparation Phase
+    runs-on: [self-hosted, tapdata]
+    timeout-minutes: 5
+    environment: ${{ inputs.target_env }}
+    outputs:
+      tapdata_token: ${{ steps.get_token.outputs.tapdata_token }}
+      tapdata_url: ${{ steps.resolve_config.outputs.tapdata_url }}
+      last_stable_tag: ${{ steps.resolve_tag.outputs.last_stable_tag }}
+      task_names: ${{ steps.collect_names.outputs.task_names }}
+      api_names: ${{ steps.collect_names.outputs.api_names }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_DEPLOY_TOKEN }}
+          fetch-depth: 0
+
+      # 多租户模式：额外 checkout worker scripts 到 _worker/
+      - name: Set Runtime Paths
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_call" && -n "${{ inputs.caller_repo }}" ]]; then
+            echo "WORKER_REPO=${{ inputs.worker_repo }}" >> "$GITHUB_ENV"
+            echo "SCRIPT_ROOT=_worker" >> "$GITHUB_ENV"
+          else
+            echo "SCRIPT_ROOT=." >> "$GITHUB_ENV"
+          fi
+
+      - name: Checkout Worker Scripts
+        if: github.event_name == 'workflow_call' && inputs.caller_repo != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.WORKER_REPO }}
+          ref: main
+          token: ${{ secrets.GH_DEPLOY_TOKEN }}
+          path: _worker
+
+      - name: Check tapdata_export Directory
+        run: bash $SCRIPT_ROOT/scripts/common/check-export-dir.sh
+        env:
+          EXPORT_DIR: ${{ github.workspace }}/${{ env.PROJECT }}_tapdata_export
+
+      - name: Validate Input Parameters
+        run: bash $SCRIPT_ROOT/scripts/tapdata-rollback/validate-inputs.sh
+        env:
+          TARGET_ENV: ${{ inputs.target_env }}
+          LAST_STABLE_TAG: ${{ inputs.last_stable_tag }}
+          PROJECT: ${{ inputs.project }}
+
+      - name: Resolve TapData Connection Config
+        id: resolve_config
+        run: |
+          case "${TARGET_ENV}" in
+            dev)  URL="${DEV_TAPDATA_URL:-${TAPDATA_URL}}"  ; CODE="${DEV_TAPDATA_ACCESS_CODE:-${TAPDATA_ACCESS_CODE}}" ;;
+            sit)  URL="${SIT_TAPDATA_URL:-${TAPDATA_URL}}"  ; CODE="${SIT_TAPDATA_ACCESS_CODE:-${TAPDATA_ACCESS_CODE}}" ;;
+            lpt)  URL="${LPT_TAPDATA_URL:-${TAPDATA_URL}}"  ; CODE="${LPT_TAPDATA_ACCESS_CODE:-${TAPDATA_ACCESS_CODE}}" ;;
+            aat)  URL="${AAT_TAPDATA_URL:-${TAPDATA_URL}}"  ; CODE="${AAT_TAPDATA_ACCESS_CODE:-${TAPDATA_ACCESS_CODE}}" ;;
+            prod) URL="${PROD_TAPDATA_URL:-${TAPDATA_URL}}" ; CODE="${PROD_TAPDATA_ACCESS_CODE:-${TAPDATA_ACCESS_CODE}}" ;;
+            *)    URL="${TAPDATA_URL}" ; CODE="${TAPDATA_ACCESS_CODE}" ;;
+          esac
+          echo "tapdata_url=${URL}" >> "${GITHUB_OUTPUT}"
+          echo "::add-mask::${CODE}"
+          echo "tapdata_accesscode=${CODE}" >> "${GITHUB_OUTPUT}"
+        env:
+          TARGET_ENV: ${{ inputs.target_env }}
+          TAPDATA_URL:              ${{ vars.TAPDATA_URL }}
+          DEV_TAPDATA_URL:          ${{ vars.DEV_TAPDATA_URL }}
+          SIT_TAPDATA_URL:          ${{ vars.SIT_TAPDATA_URL }}
+          LPT_TAPDATA_URL:          ${{ vars.LPT_TAPDATA_URL }}
+          AAT_TAPDATA_URL:          ${{ vars.AAT_TAPDATA_URL }}
+          PROD_TAPDATA_URL:         ${{ vars.PROD_TAPDATA_URL }}
+          TAPDATA_ACCESS_CODE:      ${{ secrets.TAPDATA_ACCESS_CODE }}
+          DEV_TAPDATA_ACCESS_CODE:  ${{ secrets.DEV_TAPDATA_ACCESS_CODE }}
+          SIT_TAPDATA_ACCESS_CODE:  ${{ secrets.SIT_TAPDATA_ACCESS_CODE }}
+          LPT_TAPDATA_ACCESS_CODE:  ${{ secrets.LPT_TAPDATA_ACCESS_CODE }}
+          AAT_TAPDATA_ACCESS_CODE:  ${{ secrets.AAT_TAPDATA_ACCESS_CODE }}
+          PROD_TAPDATA_ACCESS_CODE: ${{ secrets.PROD_TAPDATA_ACCESS_CODE }}
+
+      - name: Get TapData Token
+        id: get_token
+        run: bash $SCRIPT_ROOT/scripts/common/get-token.sh
+        env:
+          TARGET_ENV: ${{ inputs.target_env }}
+          TAPDATA_URL: ${{ steps.resolve_config.outputs.tapdata_url }}
+          TAPDATA_ACCESSCODE: ${{ steps.resolve_config.outputs.tapdata_accesscode }}
+
+      - name: Validate Tag Exists
+        id: resolve_tag
+        run: bash $SCRIPT_ROOT/scripts/tapdata-rollback/resolve-tag.sh
+        env:
+          LAST_STABLE_TAG: ${{ inputs.last_stable_tag }}
+          CALLER_REPO: ${{ inputs.caller_repo }}
+          GH_TOKEN: ${{ secrets.GH_DEPLOY_TOKEN }}
+
+  # ============================================================
+  # Job 2: Stop and Clean Resources
+  # ============================================================
+  stop-and-clean:
+    name: Stop and Clean Resources
+    runs-on: [self-hosted, tapdata]
+    timeout-minutes: 30
+    environment: ${{ inputs.target_env }}
+    needs: preparation
+    outputs:
+      stopped_tasks_file: ${{ steps.stop_tasks.outputs.stopped_tasks_file }}
+      unpublished_apis_file: ${{ steps.unpublish_apis.outputs.unpublished_apis_file }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_DEPLOY_TOKEN }}
+
+      - name: Set Runtime Paths
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_call" && -n "${{ inputs.caller_repo }}" ]]; then
+            echo "WORKER_REPO=${{ inputs.worker_repo }}" >> "$GITHUB_ENV"
+            echo "SCRIPT_ROOT=_worker" >> "$GITHUB_ENV"
+          else
+            echo "SCRIPT_ROOT=." >> "$GITHUB_ENV"
+          fi
+
+      - name: Checkout Worker Scripts
+        if: github.event_name == 'workflow_call' && inputs.caller_repo != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.WORKER_REPO }}
+          ref: main
+          token: ${{ secrets.GH_DEPLOY_TOKEN }}
+          path: _worker
+
+      - name: Stop All Tasks
+        id: stop_tasks
+        run: bash $SCRIPT_ROOT/scripts/common/stop-tasks.sh
+        env:
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
+          TARGET_ENV: ${{ inputs.target_env }}
+          TASK_NAMES: ${{ needs.preparation.outputs.task_names }}
+
+      - name: Unpublish All APIs
+        id: unpublish_apis
+        run: bash $SCRIPT_ROOT/scripts/tapdata-rollback/unpublish-apis.sh
+        env:
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
+          TARGET_ENV: ${{ inputs.target_env }}
+          API_NAMES: ${{ needs.preparation.outputs.api_names }}
+
+      - name: Clean All Resources
+        run: bash $SCRIPT_ROOT/scripts/tapdata-rollback/clean-resources.sh
+        env:
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
+          TARGET_ENV: ${{ inputs.target_env }}
+          STOPPED_TASKS_FILE: ${{ steps.stop_tasks.outputs.stopped_tasks_file }}
+          API_IDS: ${{ steps.unpublish_apis.outputs.unpublished_api_ids }}
+
+  # ============================================================
+  # Job 3: Import and Activate Resources
+  # ============================================================
+  import-and-activate:
+    name: Import and Activate Resources
+    runs-on: [self-hosted, tapdata]
+    timeout-minutes: 30
+    environment: ${{ inputs.target_env }}
+    needs: [preparation, stop-and-clean]
+    steps:
+      # 多租户模式：checkout 租户仓库的稳定 tag（含配置文件）
+      # 单仓库模式：checkout worker 的稳定 tag（行为不变）
+      - name: Checkout Data Repository at Stable Tag
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event_name == 'workflow_call' && inputs.caller_repo != '' && inputs.caller_repo || github.repository }}
+          ref: ${{ needs.preparation.outputs.last_stable_tag }}
+          token: ${{ secrets.GH_DEPLOY_TOKEN }}
+
+      - name: Set Runtime Paths
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_call" && -n "${{ inputs.caller_repo }}" ]]; then
+            echo "WORKER_REPO=${{ inputs.worker_repo }}" >> "$GITHUB_ENV"
+            echo "SCRIPT_ROOT=_worker" >> "$GITHUB_ENV"
+            echo "REPO_ROOT=${{ github.workspace }}" >> "$GITHUB_ENV"
+          else
+            echo "SCRIPT_ROOT=." >> "$GITHUB_ENV"
+            echo "REPO_ROOT=$(pwd)" >> "$GITHUB_ENV"
+          fi
+
+      # 多租户模式：额外 checkout worker scripts（配置文件和脚本分属不同仓库）
+      - name: Checkout Worker Scripts
+        if: github.event_name == 'workflow_call' && inputs.caller_repo != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.WORKER_REPO }}
+          ref: main
+          token: ${{ secrets.GH_DEPLOY_TOKEN }}
+          path: _worker
+
+      - name: Generate vault.json with Connection Secrets
+        run: bash $SCRIPT_ROOT/scripts/tapdata-deploy/generate-vault.sh
+        env:
+          PROJECT: ${{ env.PROJECT }}
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+          ALL_VARS: ${{ toJSON(vars) }}
+
+      - name: Compress Connections
+        run: bash $SCRIPT_ROOT/scripts/common/compress-files.sh
+        env:
+          DEPLOY_DIR: ${{ env.ROLLBACK_DIR }}
+          ARCHIVE_NAME: connections-export.tar
+          PROJECT: ${{ env.PROJECT }}
+
+      - name: Import Connections
+        run: bash $SCRIPT_ROOT/scripts/common/import-resource.sh connections
+        env:
+          DEPLOY_DIR: ${{ env.ROLLBACK_DIR }}
+          ARCHIVE_NAME: connections-export.tar
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
+          TARGET_ENV: ${{ inputs.target_env }}
+
+      - name: Compress Tasks
+        run: bash $SCRIPT_ROOT/scripts/common/compress-files.sh
+        env:
+          DEPLOY_DIR: ${{ env.ROLLBACK_DIR }}
+          ARCHIVE_NAME: tasks-export.tar
+          PROJECT: ${{ env.PROJECT }}
+
+      - name: Import Tasks
+        run: bash $SCRIPT_ROOT/scripts/common/import-resource.sh tasks
+        env:
+          DEPLOY_DIR: ${{ env.ROLLBACK_DIR }}
+          ARCHIVE_NAME: tasks-export.tar
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
+          TARGET_ENV: ${{ inputs.target_env }}
+
+      - name: Compress APIs
+        run: bash $SCRIPT_ROOT/scripts/common/compress-files.sh
+        env:
+          DEPLOY_DIR: ${{ env.ROLLBACK_DIR }}
+          ARCHIVE_NAME: apis-export.tar
+          PROJECT: ${{ env.PROJECT }}
+
+      - name: Import APIs
+        run: bash $SCRIPT_ROOT/scripts/common/import-resource.sh apis
+        env:
+          DEPLOY_DIR: ${{ env.ROLLBACK_DIR }}
+          ARCHIVE_NAME: apis-export.tar
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
+          TARGET_ENV: ${{ inputs.target_env }}
+
+      - name: Start Tasks and Publish APIs
+        run: bash $SCRIPT_ROOT/scripts/tapdata-rollback/start-and-publish.sh
+        env:
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
+          TARGET_ENV: ${{ inputs.target_env }}
+          PROJECT: ${{ env.PROJECT }}
+          STOPPED_TASKS_FILE: ${{ needs.stop-and-clean.outputs.stopped_tasks_file }}
+          UNPUBLISHED_APIS_FILE: ${{ needs.stop-and-clean.outputs.unpublished_apis_file }}
+
+
+  # ============================================================
+  # Job 4: Generate Rollback Report
+  # ============================================================
+  generate-report:
+    name: Generate Rollback Report
+    runs-on: [self-hosted, tapdata]
+    timeout-minutes: 5
+    if: always()
+    needs: [preparation, stop-and-clean, import-and-activate]
+    steps:
+      - name: Generate Rollback Report
+        run: |
+          REPORT_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+          # Determine overall result
+          if [[ "${PREPARATION_RESULT}" == "success" && "${STOP_AND_CLEAN_RESULT}" == "success" && "${IMPORT_AND_ACTIVATE_RESULT}" == "success" ]]; then
+            OVERALL_RESULT="✅ SUCCESS"
+          else
+            OVERALL_RESULT="❌ FAILURE"
+          fi
+
+          cat >> "${GITHUB_STEP_SUMMARY}" <<EOF
+          ## TapData Rollback Report
+
+          | Item | Value |
+          | --- | --- |
+          | Report Time | ${REPORT_TIME} |
+          | Operator | ${GITHUB_ACTOR} |
+          | Target Environment | ${TARGET_ENV} |
+          | Project | ${PROJECT} |
+          | Rollback Tag | ${LAST_STABLE_TAG} |
+          | Caller Repo | ${CALLER_REPO:-（单仓库模式）} |
+          | Overall Result | ${OVERALL_RESULT} |
+
+          ### Job Results
+
+          | Job | Result |
+          | --- | --- |
+          | Preparation | ${PREPARATION_RESULT} |
+          | Stop and Clean | ${STOP_AND_CLEAN_RESULT} |
+          | Import and Activate | ${IMPORT_AND_ACTIVATE_RESULT} |
+          EOF
+        env:
+          TARGET_ENV: ${{ inputs.target_env }}
+          PROJECT: ${{ env.PROJECT }}
+          LAST_STABLE_TAG: ${{ needs.preparation.outputs.last_stable_tag }}
+          CALLER_REPO: ${{ inputs.caller_repo }}
+          PREPARATION_RESULT: ${{ needs.preparation.result }}
+          STOP_AND_CLEAN_RESULT: ${{ needs.stop-and-clean.result }}
+          IMPORT_AND_ACTIVATE_RESULT: ${{ needs.import-and-activate.result }}
