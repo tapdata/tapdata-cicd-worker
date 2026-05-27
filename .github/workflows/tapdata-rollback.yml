@@ -77,7 +77,7 @@ jobs:
       # 多租户模式：额外 checkout worker scripts 到 _worker/
       - name: Set Runtime Paths
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_call" && -n "${{ inputs.caller_repo }}" ]]; then
+          if [[ -n "${{ inputs.caller_repo }}" ]]; then
             echo "WORKER_REPO=${{ inputs.worker_repo }}" >> "$GITHUB_ENV"
             echo "SCRIPT_ROOT=_worker" >> "$GITHUB_ENV"
           else
@@ -85,7 +85,7 @@ jobs:
           fi
 
       - name: Checkout Worker Scripts
-        if: github.event_name == 'workflow_call' && inputs.caller_repo != ''
+        if: inputs.caller_repo != ''
         uses: actions/checkout@v4
         with:
           repository: ${{ env.WORKER_REPO }}
@@ -170,7 +170,7 @@ jobs:
 
       - name: Set Runtime Paths
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_call" && -n "${{ inputs.caller_repo }}" ]]; then
+          if [[ -n "${{ inputs.caller_repo }}" ]]; then
             echo "WORKER_REPO=${{ inputs.worker_repo }}" >> "$GITHUB_ENV"
             echo "SCRIPT_ROOT=_worker" >> "$GITHUB_ENV"
           else
@@ -178,7 +178,7 @@ jobs:
           fi
 
       - name: Checkout Worker Scripts
-        if: github.event_name == 'workflow_call' && inputs.caller_repo != ''
+        if: inputs.caller_repo != ''
         uses: actions/checkout@v4
         with:
           repository: ${{ env.WORKER_REPO }}
@@ -228,13 +228,13 @@ jobs:
       - name: Checkout Data Repository at Stable Tag
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event_name == 'workflow_call' && inputs.caller_repo != '' && inputs.caller_repo || github.repository }}
+          repository: ${{ inputs.caller_repo != '' && inputs.caller_repo || github.repository }}
           ref: ${{ needs.preparation.outputs.last_stable_tag }}
           token: ${{ secrets.GH_DEPLOY_TOKEN }}
 
       - name: Set Runtime Paths
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_call" && -n "${{ inputs.caller_repo }}" ]]; then
+          if [[ -n "${{ inputs.caller_repo }}" ]]; then
             echo "WORKER_REPO=${{ inputs.worker_repo }}" >> "$GITHUB_ENV"
             echo "SCRIPT_ROOT=_worker" >> "$GITHUB_ENV"
             echo "REPO_ROOT=${{ github.workspace }}" >> "$GITHUB_ENV"
@@ -245,7 +245,7 @@ jobs:
 
       # 多租户模式：额外 checkout worker scripts（配置文件和脚本分属不同仓库）
       - name: Checkout Worker Scripts
-        if: github.event_name == 'workflow_call' && inputs.caller_repo != ''
+        if: inputs.caller_repo != ''
         uses: actions/checkout@v4
         with:
           repository: ${{ env.WORKER_REPO }}
