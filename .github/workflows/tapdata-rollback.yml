@@ -80,8 +80,10 @@ jobs:
           if [[ -n "${{ inputs.caller_repo }}" ]]; then
             echo "WORKER_REPO=${{ inputs.worker_repo }}" >> "$GITHUB_ENV"
             echo "SCRIPT_ROOT=_worker" >> "$GITHUB_ENV"
+            echo "REPO_ROOT=${{ github.workspace }}" >> "$GITHUB_ENV"
           else
             echo "SCRIPT_ROOT=." >> "$GITHUB_ENV"
+            echo "REPO_ROOT=$(pwd)" >> "$GITHUB_ENV"
           fi
 
       - name: Checkout Worker Scripts
@@ -96,11 +98,12 @@ jobs:
       - name: Check tapdata_export Directory
         run: bash $SCRIPT_ROOT/scripts/common/check-export-dir.sh
         env:
-          EXPORT_DIR: ${{ github.workspace }}/${{ env.PROJECT }}_tapdata_export
+          EXPORT_DIR: ${{ env.REPO_ROOT }}/${{ env.PROJECT }}_tapdata_export
 
       - name: Validate Input Parameters
         run: bash $SCRIPT_ROOT/scripts/tapdata-rollback/validate-inputs.sh
         env:
+          REPO_ROOT: ${{ env.REPO_ROOT }}
           TARGET_ENV: ${{ inputs.target_env }}
           LAST_STABLE_TAG: ${{ inputs.last_stable_tag }}
           PROJECT: ${{ inputs.project }}

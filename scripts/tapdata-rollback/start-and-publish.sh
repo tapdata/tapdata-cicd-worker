@@ -20,7 +20,7 @@ fi
 BASE_URL="${TAPDATA_URL}"
 API_BASE="${BASE_URL%/}/api"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="${SCRIPT_DIR}/../.."
+REPO_ROOT="${REPO_ROOT:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
 TASK_EXPORT_DIR="${REPO_ROOT}/${PROJECT}_tapdata_export/Task"
 
 # ── Step 1: Restore task attrs ──
