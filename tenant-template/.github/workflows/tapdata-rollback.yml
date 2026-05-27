@@ -16,13 +16,18 @@ on:
         description: 'Tag to rollback to (required)'
         required: true
         type: string
+      project:
+        description: 'Project name (留空则取 vars.PROJECT_NAME，再回落到仓库名)'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   rollback:
     # TODO: Replace {WORKER_REPO} with actual org/repo, e.g. your-org/tapdata-cicd-worker
     uses: "{WORKER_REPO}/.github/workflows/tapdata-rollback.yml@main"
     with:
-      project: ${{ github.event.repository.name }}
+      project: ${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }}
       target_env: ${{ inputs.target_env }}
       last_stable_tag: ${{ inputs.last_stable_tag }}
       caller_repo: ${{ github.repository }}

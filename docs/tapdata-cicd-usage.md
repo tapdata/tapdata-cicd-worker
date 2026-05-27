@@ -309,12 +309,17 @@ on:
           - sit
           - aat
           - prod
+      project:
+        description: 'Project name (留空则取 vars.PROJECT_NAME，再回落到仓库名)'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   deploy:
     uses: "{worker-org}/{worker-repo}/.github/workflows/tapdata-deploy.yml@main"
     with:
-      project: ${{ github.event.repository.name }}
+      project: ${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }}
       target_env: ${{ inputs.target_env || '' }}
       caller_repo: ${{ github.repository }}
       caller_sha: ${{ github.sha }}
@@ -524,11 +529,11 @@ sudo ./svc.sh status
 
 在 TapData 创建项目，将 8.2 资源加入项目，并配置 GitHub 导出：
 
-- **项目名** 与租户仓库名一致（`{tenant-repo}`）
+- **项目名**：按以下优先级解析（自高到低）——① `workflow_dispatch` 手动输入的 `project`；② 租户仓库 `vars.PROJECT_NAME`；③ 仓库名（`{tenant-repo}`）。下文以 `{project}` 表示解析结果，TapData 项目名需与之一致
 - **GitHub URL**：`https://github.com/{tenant-org}/{tenant-repo}`
 - **GitHub Token**：第 4 节申请的 PAT
 - **分支**：`main`
-- **导出目录**：`{tenant-repo}_tapdata_export`
+- **导出目录**：`{project}_tapdata_export`
 
 ### 8.4 导出到 GitHub → 触发 Dev 部署
 

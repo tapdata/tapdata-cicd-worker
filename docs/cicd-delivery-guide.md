@@ -245,7 +245,7 @@ URI：mongodb://{用户专属账号}:{密码}@{host}:27017/mdm
 
    | 字段 | 值 |
    |-----|---|
-   | 项目名称 | 与租户仓库名保持一致，如 `tenant-a` |
+   | 项目名称 | 默认与租户仓库名保持一致，如 `tenant-a`；如需不一致，在租户仓库 Settings → Variables 设置 `PROJECT_NAME`，TapData 项目名需与该变量一致 |
    | 描述 | Tenant A 团队资源集合 |
 
 3. 将上述连接、任务、API 添加到对应项目
@@ -433,14 +433,20 @@ jobs:
 
 ### 6.4 配置 TapData 项目
 
-确认 TapData 平台上已存在与租户仓库同名的项目：
+确认 TapData 平台上已存在与"解析后的项目名"同名的项目。**项目名按以下优先级解析**（自高到低）：
 
-| 仓库名 | TapData 项目名 |
-|-------|--------------|
-| `tenant-b` | `tenant-b` |
-| `tenant-a` | `tenant-a` |
+1. `workflow_dispatch` 手动触发时传入的 `project` 输入（单次覆盖）
+2. 租户仓库 `vars.PROJECT_NAME` 变量
+3. 租户仓库名
 
-> 如果项目名不一致，部署流程无法正确识别并过滤资源范围。
+| 租户仓库 | 手动 `project` 输入 | `vars.PROJECT_NAME` | 解析后的 TapData 项目名 |
+|---|---|---|---|
+| `tenant-a` | _空_ | _未设置_ | `tenant-a` |
+| `tenant-b` | _空_ | _未设置_ | `tenant-b` |
+| `foo-cicd-config` | _空_ | `foo` | `foo` |
+| `foo-cicd-config` | `bar` | `foo` | `bar` |
+
+> 部署流程会按"解析后的项目名"查找 `{project}_tapdata_export/` 目录并匹配 TapData 项目，三者必须一致。
 
 ---
 

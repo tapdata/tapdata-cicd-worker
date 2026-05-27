@@ -198,9 +198,18 @@ Configure at tenant repo > **Settings** > **Secrets and variables** > **Actions*
 - [ ] `sit` environment database credentials configured
 - [ ] `lpt` environment database credentials configured
 
+**Optional repository variable (only when project name differs from repo name):**
+
+- [ ] `PROJECT_NAME` — set on the tenant repo if the TapData project name and `{project}_tapdata_export/` directory prefix should differ from the repo name. Leave unset to default to the repo name.
+
+> **Project name resolution priority** (highest first):
+> 1. `workflow_dispatch` manual input `project` (per-run override)
+> 2. Repository variable `vars.PROJECT_NAME`
+> 3. Repository name (`github.event.repository.name`)
+
 **TapData platform:**
 
-- [ ] Create a project on TapData platform with the name matching the tenant repository name (e.g. repository `your-tenant-repo` → project name `your-tenant-repo`)
+- [ ] Create a project on TapData platform whose name matches the resolved project name. By default this is the tenant repository name (e.g. repo `your-tenant-repo` → project `your-tenant-repo`). If `PROJECT_NAME` is set, the project name on TapData must match that variable's value instead.
 
 ---
 
