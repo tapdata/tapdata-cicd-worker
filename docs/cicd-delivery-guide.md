@@ -92,6 +92,7 @@ TapData 平台通过 **用户 → 角色 → 权限** 三层模型实现多租�
 | `tapdata-cicd-worker/scripts/tapdata-deploy/generate-vault.sh` | 从 GitHub Secrets 生成 vault.json |
 | `tapdata-cicd-worker/scripts/tapdata-deploy/validate-inputs.sh` | 验证部署参数 |
 | `tapdata-cicd-worker/scripts/tapdata-deploy/generate-report.sh` | 生成部署汇总报告 |
+| `tapdata-cicd-worker/scripts/tapdata-rollback/collect-names.sh` | 扫描 export 目录，按项目限定回滚范围 |
 | `tapdata-cicd-worker/scripts/tapdata-rollback/resolve-tag.sh` | 解析回滚目标 Tag |
 | `tapdata-cicd-worker/scripts/tapdata-rollback/clean-resources.sh` | 清理现有资源 |
 | `tapdata-cicd-worker/tenant-template/.github/workflows/tapdata-deploy.yml` | 租户工作流模板 |
@@ -605,12 +606,15 @@ git push origin tenant-b-v1.2.0
 
 ### 9.4 回滚操作
 
-**场景**：SIT 环境发现 tenant-b 配置有问题，需要回滚到上一个版本。
+**场景**：SIT 环境发现 tenant-b 的 `project-x` 配置有问题，需要回滚到上一个版本。
 
 1. 进入 `tenant-b` 仓库 → **Actions** → 选择 `TapData Rollback`（如有）
-2. 或手动触发工作流，指定回滚目标 Tag（如 `tenant-b-v1.1.0`）
-3. 工作流会执行：停止任务 → 清理资源 → 从目标版本重新导入 → 重新激活
-4. 仅 tenant-b 的资源受影响，tenant-a 完全不受干扰
+2. 或手动触发工作流，输入：目标 Tag（如 `tenant-b-v1.1.0`）+ 项目名（`project-x`）
+3. 工作流会执行：扫描 export 收集 `project-x` 的任务/API 名 → 仅停止 `project-x` 的任务 → 仅下线 `project-x` 的 API → 仅清理 `project-x` 的资源 → 从目标 Tag 重新导入 → 重新激活
+4. 隔离边界：
+   - tenant-a 仓库的资源完全不受影响
+   - 同租户但不同项目（如 `tenant-b/project-y`）的资源也完全不受影响
+   - 同租户同项目但不同环境（如 dev/aat）的资源完全不受影响
 
 ### 9.5 新增租户
 

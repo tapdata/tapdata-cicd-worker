@@ -68,9 +68,16 @@ jobs:
       task_names: ${{ steps.collect_names.outputs.task_names }}
       api_names: ${{ steps.collect_names.outputs.api_names }}
     steps:
-      - name: Checkout Repository
+      # 数据仓库 checkout：
+      #   - 单仓库模式：worker == 数据仓库，checkout 自身默认分支
+      #   - 多租户模式：checkout 租户仓库的默认分支（含 {project}_tapdata_export/）
+      # 注意：这里 checkout 的是"当前主线"，不是 last_stable_tag。
+      # 收集任务/API 名时使用当前主线，确保把"上一次部署已经在环境里"的资源都纳入清理范围。
+      # 稳定 tag 的 checkout 在 import-and-activate Job 内完成。
+      - name: Checkout Data Repository
         uses: actions/checkout@v4
         with:
+          repository: ${{ inputs.caller_repo != '' && inputs.caller_repo || github.repository }}
           token: ${{ secrets.GH_DEPLOY_TOKEN }}
           fetch-depth: 0
 
@@ -108,6 +115,16 @@ jobs:
           LAST_STABLE_TAG: ${{ inputs.last_stable_tag }}
           PROJECT: ${{ inputs.project }}
 
+      # 收集当前主线上属于本项目的任务/API 名，把回滚的 stop/unpublish/clean 范围严格限定在本项目。
+      # 若不传名字，stop-tasks.sh / unpublish-apis.sh 会进入"全部"模式，
+      # 在多项目共享同一环境时会误伤其他项目的资源。
+      - name: Collect Task/API Names from Export
+        id: collect_names
+        run: bash $SCRIPT_ROOT/scripts/tapdata-rollback/collect-names.sh
+        env:
+          REPO_ROOT: ${{ env.REPO_ROOT }}
+          PROJECT: ${{ inputs.project }}
+
       - name: Resolve TapData Connection Config
         id: resolve_config
         run: |
@@ -120,8 +137,10 @@ jobs:
             *)    URL="${TAPDATA_URL}" ; CODE="${TAPDATA_ACCESS_CODE}" ;;
           esac
           echo "tapdata_url=${URL}" >> "${GITHUB_OUTPUT}"
+          # F6: accesscode 仅在同 Job 内被下一步消费，写入 $GITHUB_ENV 而非 $GITHUB_OUTPUT，
+          # 这样 secret 严格保留在 runner 进程内，不会出现在 step output 数据中（即使已 mask）。
           echo "::add-mask::${CODE}"
-          echo "tapdata_accesscode=${CODE}" >> "${GITHUB_OUTPUT}"
+          echo "TAPDATA_ACCESSCODE=${CODE}" >> "${GITHUB_ENV}"
         env:
           TARGET_ENV: ${{ inputs.target_env }}
           TAPDATA_URL:              ${{ vars.TAPDATA_URL }}
@@ -143,7 +162,7 @@ jobs:
         env:
           TARGET_ENV: ${{ inputs.target_env }}
           TAPDATA_URL: ${{ steps.resolve_config.outputs.tapdata_url }}
-          TAPDATA_ACCESSCODE: ${{ steps.resolve_config.outputs.tapdata_accesscode }}
+          # TAPDATA_ACCESSCODE 由上一步通过 $GITHUB_ENV 注入到 Job 全局环境，无需在此显式声明
 
       - name: Validate Tag Exists
         id: resolve_tag
@@ -166,7 +185,11 @@ jobs:
       stopped_tasks_file: ${{ steps.stop_tasks.outputs.stopped_tasks_file }}
       unpublished_apis_file: ${{ steps.unpublish_apis.outputs.unpublished_apis_file }}
     steps:
-      - name: Checkout Repository
+      # 这个 Job 只需要 worker 上的脚本，不需要租户数据。
+      # 单仓库模式：checkout worker 自身（默认分支）拿脚本。
+      # 多租户模式：跳过这一步，scripts 来自下面的 _worker checkout。
+      - name: Checkout Worker (single-repo mode)
+        if: inputs.caller_repo == ''
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_DEPLOY_TOKEN }}
@@ -189,8 +212,12 @@ jobs:
           token: ${{ secrets.GH_DEPLOY_TOKEN }}
           path: _worker
 
-      - name: Stop All Tasks
+      # 仅当本项目确实在环境里有任务时才执行。
+      # 若 task_names 为空（项目尚无任务，或本次回滚的版本不含任务），跳过——
+      # 否则 stop-tasks.sh 会进入"停止全部任务"模式，会误伤同环境下其他项目的资源。
+      - name: Stop Tasks
         id: stop_tasks
+        if: needs.preparation.outputs.task_names != ''
         run: bash $SCRIPT_ROOT/scripts/common/stop-tasks.sh
         env:
           TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
@@ -198,8 +225,10 @@ jobs:
           TARGET_ENV: ${{ inputs.target_env }}
           TASK_NAMES: ${{ needs.preparation.outputs.task_names }}
 
-      - name: Unpublish All APIs
+      # 同上：若 api_names 为空就跳过，避免"下线全部 API"模式误伤。
+      - name: Unpublish APIs
         id: unpublish_apis
+        if: needs.preparation.outputs.api_names != ''
         run: bash $SCRIPT_ROOT/scripts/tapdata-rollback/unpublish-apis.sh
         env:
           TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
@@ -226,8 +255,8 @@ jobs:
     environment: ${{ inputs.target_env }}
     needs: [preparation, stop-and-clean]
     steps:
-      # 多租户模式：checkout 租户仓库的稳定 tag（含配置文件）
-      # 单仓库模式：checkout worker 的稳定 tag（行为不变）
+      # 数据仓库 checkout 到稳定 tag（含配置文件）。
+      # 多租户：checkout 租户仓库；单仓库：checkout worker 自身（同一仓库既是脚本又是配置）。
       - name: Checkout Data Repository at Stable Tag
         uses: actions/checkout@v4
         with:
@@ -235,20 +264,19 @@ jobs:
           ref: ${{ needs.preparation.outputs.last_stable_tag }}
           token: ${{ secrets.GH_DEPLOY_TOKEN }}
 
+      # F4: 单/多租户都把脚本从 worker 仓库的 main 单独 checkout 到 _worker/，
+      # 避免单仓库模式下使用"稳定 tag 时刻的旧脚本"——脚本一律来自当前主线，配置来自稳定 tag。
       - name: Set Runtime Paths
         run: |
           if [[ -n "${{ inputs.caller_repo }}" ]]; then
             echo "WORKER_REPO=${{ inputs.worker_repo }}" >> "$GITHUB_ENV"
-            echo "SCRIPT_ROOT=_worker" >> "$GITHUB_ENV"
-            echo "REPO_ROOT=${{ github.workspace }}" >> "$GITHUB_ENV"
           else
-            echo "SCRIPT_ROOT=." >> "$GITHUB_ENV"
-            echo "REPO_ROOT=$(pwd)" >> "$GITHUB_ENV"
+            echo "WORKER_REPO=${{ github.repository }}" >> "$GITHUB_ENV"
           fi
+          echo "SCRIPT_ROOT=_worker" >> "$GITHUB_ENV"
+          echo "REPO_ROOT=${{ github.workspace }}" >> "$GITHUB_ENV"
 
-      # 多租户模式：额外 checkout worker scripts（配置文件和脚本分属不同仓库）
       - name: Checkout Worker Scripts
-        if: inputs.caller_repo != ''
         uses: actions/checkout@v4
         with:
           repository: ${{ env.WORKER_REPO }}
@@ -256,9 +284,15 @@ jobs:
           token: ${{ secrets.GH_DEPLOY_TOKEN }}
           path: _worker
 
+      # F7: 注意 — 回滚不像 deploy 那样把 vault.json 通过 artifact 跨 Job 传递，
+      # 所以这里直接内联生成、就地打包导入，全程都在同一个 runner 进程中、不跨 Job 持久化。
+      # 因此回滚没有复用 deploy 的 vault-crypto.sh 加密流程。
+      # 后续若要把 import-and-activate 拆分成多个带审批门的 Job（如分别审批 connections/tasks），
+      # 必须重新评估并补上 vault 加密（参考 tapdata-deploy.yml 中的 Encrypt vault.json / Decrypt vault.json）。
       - name: Generate vault.json with Connection Secrets
         run: bash $SCRIPT_ROOT/scripts/tapdata-deploy/generate-vault.sh
         env:
+          REPO_ROOT: ${{ env.REPO_ROOT }}
           PROJECT: ${{ env.PROJECT }}
           ALL_SECRETS: ${{ toJSON(secrets) }}
           ALL_VARS: ${{ toJSON(vars) }}
@@ -266,6 +300,7 @@ jobs:
       - name: Compress Connections
         run: bash $SCRIPT_ROOT/scripts/common/compress-files.sh
         env:
+          REPO_ROOT: ${{ env.REPO_ROOT }}
           DEPLOY_DIR: ${{ env.ROLLBACK_DIR }}
           ARCHIVE_NAME: connections-export.tar
           PROJECT: ${{ env.PROJECT }}
@@ -282,6 +317,7 @@ jobs:
       - name: Compress Tasks
         run: bash $SCRIPT_ROOT/scripts/common/compress-files.sh
         env:
+          REPO_ROOT: ${{ env.REPO_ROOT }}
           DEPLOY_DIR: ${{ env.ROLLBACK_DIR }}
           ARCHIVE_NAME: tasks-export.tar
           PROJECT: ${{ env.PROJECT }}
@@ -298,6 +334,7 @@ jobs:
       - name: Compress APIs
         run: bash $SCRIPT_ROOT/scripts/common/compress-files.sh
         env:
+          REPO_ROOT: ${{ env.REPO_ROOT }}
           DEPLOY_DIR: ${{ env.ROLLBACK_DIR }}
           ARCHIVE_NAME: apis-export.tar
           PROJECT: ${{ env.PROJECT }}
@@ -314,6 +351,7 @@ jobs:
       - name: Start Tasks and Publish APIs
         run: bash $SCRIPT_ROOT/scripts/tapdata-rollback/start-and-publish.sh
         env:
+          REPO_ROOT: ${{ env.REPO_ROOT }}
           TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
           TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
           TARGET_ENV: ${{ inputs.target_env }}
@@ -336,8 +374,13 @@ jobs:
         run: |
           REPORT_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
 
-          # Determine overall result
-          if [[ "${PREPARATION_RESULT}" == "success" && "${STOP_AND_CLEAN_RESULT}" == "success" && "${IMPORT_AND_ACTIVATE_RESULT}" == "success" ]]; then
+          # F8: 区分 CANCELLED 与 FAILURE：
+          # 任一上游 Job 是 cancelled → 整体取消（操作者主动中断，不需要排查）
+          # 全部 success → 成功；其余情况（任一 failure/skipped 等）→ 失败
+          ALL_RESULTS="${PREPARATION_RESULT} ${STOP_AND_CLEAN_RESULT} ${IMPORT_AND_ACTIVATE_RESULT}"
+          if [[ "${ALL_RESULTS}" == *cancelled* ]]; then
+            OVERALL_RESULT="⏸ CANCELLED"
+          elif [[ "${PREPARATION_RESULT}" == "success" && "${STOP_AND_CLEAN_RESULT}" == "success" && "${IMPORT_AND_ACTIVATE_RESULT}" == "success" ]]; then
             OVERALL_RESULT="✅ SUCCESS"
           else
             OVERALL_RESULT="❌ FAILURE"
