@@ -11,7 +11,7 @@
 #
 # 目录约定（与 start-and-publish.sh / unpublish-apis.sh 保持一致）：
 #   Task/*Task.json       — TapData 任务导出文件
-#   Modules/*Module.json  — TapData API（Module）导出文件
+#   API/*Module.json      — TapData API（Module）导出文件
 set -euo pipefail
 
 if [[ -z "${PROJECT:-}" ]]; then
@@ -54,12 +54,12 @@ fi
 echo "Tasks found (${#TASK_NAMES[@]}): ${TASK_NAMES_CSV}"
 
 # ── 收集 API 名 ──
-# 约定：Modules/*Module.json，取 .[0].json.name（与 Module 的 name 字段对应，
+# 约定：API/*Module.json，取 .[0].json.name（与 Module 的 name 字段对应，
 # 也是 unpublish-apis.sh 用 where.name.$inq 过滤时所用字段）
 API_NAMES=()
-MODULES_DIR="${EXPORT_DIR}/Modules"
-if [[ -d "${MODULES_DIR}" ]]; then
-  for f in "${MODULES_DIR}"/*Module.json; do
+API_DIR="${EXPORT_DIR}/API"
+if [[ -d "${API_DIR}" ]]; then
+  for f in "${API_DIR}"/*Module.json; do
     [[ -f "${f}" ]] || continue
     name=$(jq -r '.[0].json.name // empty' "${f}" 2>/dev/null || true)
     if [[ -n "${name}" ]]; then

@@ -348,6 +348,9 @@ jobs:
           TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
           TARGET_ENV: ${{ inputs.target_env }}
 
+      # 重新激活：按本项目导出里定义的资源名，去线上重新查当前 id 再启动/发布。
+      # 同时做导入落地校验——导出里定义的任务/API 若在超时内没出现，直接报错（不再静默）。
+      # 不再依赖 stop-and-clean 写到 /tmp 的"删除前"文件（旧 id 已失效，且跨 runner 可能取不到）。
       - name: Start Tasks and Publish APIs
         run: bash $SCRIPT_ROOT/scripts/tapdata-rollback/start-and-publish.sh
         env:
@@ -356,8 +359,6 @@ jobs:
           TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
           TARGET_ENV: ${{ inputs.target_env }}
           PROJECT: ${{ env.PROJECT }}
-          STOPPED_TASKS_FILE: ${{ needs.stop-and-clean.outputs.stopped_tasks_file }}
-          UNPUBLISHED_APIS_FILE: ${{ needs.stop-and-clean.outputs.unpublished_apis_file }}
 
 
   # ============================================================
