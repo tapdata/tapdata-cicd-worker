@@ -78,7 +78,8 @@ fi
 echo "Target environment: ${TARGET_ENV:-unknown}"
 echo "API URL: ${API_URL}"
 
-IMPORT_MODE="${IMPORT_MODE:-replace}"
+# TAP-11891: 与 import-resource.sh 保持一致（preview 的 diff 与导入模式无关，此处仅为统一）
+IMPORT_MODE="${IMPORT_MODE:-group_import}"
 
 echo "Archive: ${ARCHIVE}"
 echo "Import mode: ${IMPORT_MODE}"

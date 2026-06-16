@@ -82,7 +82,9 @@ fi
 
 echo "Target environment: ${TARGET_ENV}"
 echo "API URL: ${API_URL}"
-IMPORT_MODE="${IMPORT_MODE:-replace}"
+# TAP-11891: 默认 group_import。任务导入时保留每表"全量已完成"里程碑(edgeMilestones)与增量断点(syncProgress)，
+# 仅新增表做全量；replace 会清空运行态导致全表重新全量。所有资源类型在 group_import 下均按 _id 覆盖，安全。
+IMPORT_MODE="${IMPORT_MODE:-group_import}"
 
 echo "Archive: ${ARCHIVE}"
 echo "Import mode: ${IMPORT_MODE}"
