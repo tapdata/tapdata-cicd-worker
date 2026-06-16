@@ -102,6 +102,8 @@ jobs:
       target_env: ${{ env.TARGET_ENV }}
       tapdata_url: ${{ steps.resolve_config.outputs.tapdata_url }}
       project: ${{ steps.detect_project.outputs.project }}
+      vault_transport: ${{ steps.resolve_transport.outputs.vault_transport }}
+      prep_runner: ${{ steps.resolve_transport.outputs.prep_runner }}
     steps:
       # Step 1: checkout 数据源
       #   - workflow_call：checkout 租户仓库（含 JSON 文件）到 workspace 根
@@ -213,13 +215,26 @@ jobs:
           VAULT_ENCRYPTION_KEY: ${{ secrets.VAULT_ENCRYPTION_KEY }}
           CRYPTO_ACTION: encrypt
 
-      - name: Upload vault and export files
+      - name: Upload vault (artifact)
+        id: upload_vault
+        if: vars.VAULT_TRANSPORT != 'local'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: vault-and-export
           path: |
             ${{ env.PROJECT }}_tapdata_export/vault.json
           retention-days: 1
+
+      - name: Resolve vault transport
+        id: resolve_transport
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/resolve-vault-transport.sh
+        env:
+          FORCED_TRANSPORT: ${{ vars.VAULT_TRANSPORT }}
+          UPLOAD_OUTCOME: ${{ steps.upload_vault.outcome }}
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          VAULT_FILE: ${{ env.PROJECT }}_tapdata_export/vault.json
+          RUNNER_NAME: ${{ runner.name }}
 
   # ============================================================
   # Job 2: Deploy Users (no approval required)
@@ -259,11 +274,20 @@ jobs:
           token: ${{ secrets.GH_DEPLOY_TOKEN }}
           path: _worker
 
-      - name: Download vault artifact
+      - name: Download vault (artifact)
+        if: needs.preparation.outputs.vault_transport == 'artifact'
         uses: actions/download-artifact@v4
         with:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export
+
+      - name: Download vault (local file)
+        if: needs.preparation.outputs.vault_transport == 'local'
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-transport.sh pull
+        env:
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          VAULT_FILE: ${{ env.PROJECT }}_tapdata_export/vault.json
+          PREP_RUNNER: ${{ needs.preparation.outputs.prep_runner }}
 
       - name: Decrypt vault.json
         run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-crypto.sh
@@ -333,11 +357,20 @@ jobs:
           token: ${{ secrets.GH_DEPLOY_TOKEN }}
           path: _worker
 
-      - name: Download vault artifact
+      - name: Download vault (artifact)
+        if: needs.preparation.outputs.vault_transport == 'artifact'
         uses: actions/download-artifact@v4
         with:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export
+
+      - name: Download vault (local file)
+        if: needs.preparation.outputs.vault_transport == 'local'
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-transport.sh pull
+        env:
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          VAULT_FILE: ${{ env.PROJECT }}_tapdata_export/vault.json
+          PREP_RUNNER: ${{ needs.preparation.outputs.prep_runner }}
 
       - name: Decrypt vault.json
         run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-crypto.sh
@@ -452,11 +485,20 @@ jobs:
           token: ${{ secrets.GH_DEPLOY_TOKEN }}
           path: _worker
 
-      - name: Download vault artifact
+      - name: Download vault (artifact)
+        if: needs.preparation.outputs.vault_transport == 'artifact'
         uses: actions/download-artifact@v4
         with:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export
+
+      - name: Download vault (local file)
+        if: needs.preparation.outputs.vault_transport == 'local'
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-transport.sh pull
+        env:
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          VAULT_FILE: ${{ env.PROJECT }}_tapdata_export/vault.json
+          PREP_RUNNER: ${{ needs.preparation.outputs.prep_runner }}
 
       - name: Decrypt vault.json
         run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-crypto.sh
@@ -530,11 +572,20 @@ jobs:
           token: ${{ secrets.GH_DEPLOY_TOKEN }}
           path: _worker
 
-      - name: Download vault artifact
+      - name: Download vault (artifact)
+        if: needs.preparation.outputs.vault_transport == 'artifact'
         uses: actions/download-artifact@v4
         with:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export
+
+      - name: Download vault (local file)
+        if: needs.preparation.outputs.vault_transport == 'local'
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-transport.sh pull
+        env:
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          VAULT_FILE: ${{ env.PROJECT }}_tapdata_export/vault.json
+          PREP_RUNNER: ${{ needs.preparation.outputs.prep_runner }}
 
       - name: Decrypt vault.json
         run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-crypto.sh
@@ -609,11 +660,20 @@ jobs:
           token: ${{ secrets.GH_DEPLOY_TOKEN }}
           path: _worker
 
-      - name: Download vault artifact
+      - name: Download vault (artifact)
+        if: needs.preparation.outputs.vault_transport == 'artifact'
         uses: actions/download-artifact@v4
         with:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export
+
+      - name: Download vault (local file)
+        if: needs.preparation.outputs.vault_transport == 'local'
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-transport.sh pull
+        env:
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          VAULT_FILE: ${{ env.PROJECT }}_tapdata_export/vault.json
+          PREP_RUNNER: ${{ needs.preparation.outputs.prep_runner }}
 
       - name: Decrypt vault.json
         run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-crypto.sh
@@ -689,11 +749,20 @@ jobs:
           token: ${{ secrets.GH_DEPLOY_TOKEN }}
           path: _worker
 
-      - name: Download vault artifact
+      - name: Download vault (artifact)
+        if: needs.preparation.outputs.vault_transport == 'artifact'
         uses: actions/download-artifact@v4
         with:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export
+
+      - name: Download vault (local file)
+        if: needs.preparation.outputs.vault_transport == 'local'
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-transport.sh pull
+        env:
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          VAULT_FILE: ${{ env.PROJECT }}_tapdata_export/vault.json
+          PREP_RUNNER: ${{ needs.preparation.outputs.prep_runner }}
 
       - name: Decrypt vault.json
         run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-crypto.sh
@@ -768,11 +837,20 @@ jobs:
           token: ${{ secrets.GH_DEPLOY_TOKEN }}
           path: _worker
 
-      - name: Download vault artifact
+      - name: Download vault (artifact)
+        if: needs.preparation.outputs.vault_transport == 'artifact'
         uses: actions/download-artifact@v4
         with:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export
+
+      - name: Download vault (local file)
+        if: needs.preparation.outputs.vault_transport == 'local'
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-transport.sh pull
+        env:
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          VAULT_FILE: ${{ env.PROJECT }}_tapdata_export/vault.json
+          PREP_RUNNER: ${{ needs.preparation.outputs.prep_runner }}
 
       - name: Decrypt vault.json
         run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-crypto.sh
@@ -798,3 +876,32 @@ jobs:
           TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
           TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
           TARGET_ENV: ${{ env.TARGET_ENV }}
+
+  # ============================================================
+  # Job 9: Cleanup (always runs — removes vault credentials from runner /tmp)
+  # ============================================================
+  cleanup:
+    name: Cleanup
+    runs-on: [self-hosted, tapdata]
+    timeout-minutes: 5
+    needs:
+      - preparation
+      - deploy-users
+      - preview-all
+      - deploy-connections
+      - deploy-migrate-tasks
+      - deploy-sync-tasks
+      - deploy-apis
+      - deploy-group-info
+    if: always()
+    steps:
+      - name: Remove deploy temp dir (credentials)
+        run: |
+          if [[ -n "${DEPLOY_DIR:-}" ]]; then
+            rm -rf "${DEPLOY_DIR}"
+            echo "Removed ${DEPLOY_DIR}"
+          else
+            echo "DEPLOY_DIR empty, nothing to clean"
+          fi
+        env:
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}

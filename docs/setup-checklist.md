@@ -127,6 +127,7 @@ Configure at `{team_org}` > **Settings** > **Secrets and variables** > **Actions
 
 - [ ] `SIT_TAPDATA_URL` (e.g. `http://10.0.0.1:3030`)
 - [ ] `LPT_TAPDATA_URL`
+- [ ] `VAULT_TRANSPORT` — *(optional)* how vault.json is passed between Jobs. `auto` (default, unset): try artifact, automatically fall back to a local file if artifacts are unavailable (e.g. on GHES); `local`: skip artifacts entirely (no error log noise) — **use this on a single self-hosted runner where artifacts are not supported**; `artifact`: force artifacts (only when you are sure they are supported). Local-file mode requires all Jobs to run on the **same** runner.
 
 ### 2.3 Per-Tenant Repository Configuration
 
