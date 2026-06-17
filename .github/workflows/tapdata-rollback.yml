@@ -16,10 +16,6 @@ on:
         description: 'Tag to rollback to (required)'
         required: true
         type: string
-      project:
-        description: 'Project name (matches the {project}_tapdata_export/ directory prefix)'
-        required: true
-        type: string
   workflow_call:
     inputs:
       target_env:
@@ -50,7 +46,6 @@ on:
 
 env:
   ROLLBACK_DIR: /tmp/tapdata-rollback-${{ github.run_id }}
-  PROJECT: ${{ inputs.project }}
 
 jobs:
   # ============================================================
@@ -67,6 +62,7 @@ jobs:
       last_stable_tag: ${{ steps.resolve_tag.outputs.last_stable_tag }}
       task_names: ${{ steps.collect_names.outputs.task_names }}
       api_names: ${{ steps.collect_names.outputs.api_names }}
+      project: ${{ steps.detect_project.outputs.project }}
     steps:
       # 数据仓库 checkout：
       #   - 单仓库模式：worker == 数据仓库，checkout 自身默认分支
@@ -102,6 +98,14 @@ jobs:
           token: ${{ secrets.GH_DEPLOY_TOKEN }}
           path: _worker
 
+      # 项目自动检测（与 deploy 一致）：workflow_call 由租户传入；手动 dispatch 为空 → 扫描唯一的 *_tapdata_export/
+      - name: Detect Project
+        id: detect_project
+        run: bash $SCRIPT_ROOT/scripts/tapdata-deploy/detect-project.sh
+        env:
+          INPUT_PROJECT: ${{ inputs.project }}
+          PROJECT_NAME:  ${{ vars.PROJECT_NAME }}
+
       - name: Check tapdata_export Directory
         run: bash $SCRIPT_ROOT/scripts/common/check-export-dir.sh
         env:
@@ -113,7 +117,7 @@ jobs:
           REPO_ROOT: ${{ env.REPO_ROOT }}
           TARGET_ENV: ${{ inputs.target_env }}
           LAST_STABLE_TAG: ${{ inputs.last_stable_tag }}
-          PROJECT: ${{ inputs.project }}
+          PROJECT: ${{ env.PROJECT }}
 
       # 收集当前主线上属于本项目的任务/API 名，把回滚的 stop/unpublish/clean 范围严格限定在本项目。
       # 若不传名字，stop-tasks.sh / unpublish-apis.sh 会进入"全部"模式，
@@ -123,7 +127,7 @@ jobs:
         run: bash $SCRIPT_ROOT/scripts/tapdata-rollback/collect-names.sh
         env:
           REPO_ROOT: ${{ env.REPO_ROOT }}
-          PROJECT: ${{ inputs.project }}
+          PROJECT: ${{ env.PROJECT }}
 
       - name: Resolve TapData Connection Config
         id: resolve_config
@@ -254,6 +258,8 @@ jobs:
     timeout-minutes: 30
     environment: ${{ inputs.target_env }}
     needs: [preparation, stop-and-clean]
+    env:
+      PROJECT: ${{ needs.preparation.outputs.project }}
     steps:
       # 数据仓库 checkout 到稳定 tag（含配置文件）。
       # 多租户：checkout 租户仓库；单仓库：checkout worker 自身（同一仓库既是脚本又是配置）。
@@ -370,6 +376,8 @@ jobs:
     timeout-minutes: 5
     if: always()
     needs: [preparation, stop-and-clean, import-and-activate]
+    env:
+      PROJECT: ${{ needs.preparation.outputs.project }}
     steps:
       - name: Generate Rollback Report
         run: |

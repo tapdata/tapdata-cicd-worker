@@ -17,10 +17,6 @@ on:
           - dev
           - sit
           - lpt
-      project:
-        description: 'Project name (matches the {project}_tapdata_export/ directory prefix; auto-detected on push events)'
-        required: true
-        type: string
 
   # 多租户模式：被租户仓库通过 workflow_call 调用
   workflow_call:
@@ -146,9 +142,10 @@ jobs:
         id: detect_project
         run: bash ${{ env.SCRIPT_ROOT }}/scripts/tapdata-deploy/detect-project.sh
         env:
-          # workflow_call 时：project 已由租户明确传入，用 workflow_dispatch 路径直接使用 INPUT_PROJECT
-          EVENT_NAME: ${{ inputs.caller_repo != '' && 'workflow_dispatch' || github.event_name }}
-          INPUT_PROJECT: ${{ inputs.caller_repo != '' && inputs.project || inputs.project }}
+          # workflow_call 时：project 由租户程序化传入，直接使用；
+          # 单仓库 push / 手动 dispatch 时 INPUT_PROJECT 为空 → detect-project.sh 自动检测（一仓一项目）
+          INPUT_PROJECT: ${{ inputs.project }}
+          PROJECT_NAME:  ${{ vars.PROJECT_NAME }}
 
       - name: Check tapdata_export Directory
         run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/check-export-dir.sh

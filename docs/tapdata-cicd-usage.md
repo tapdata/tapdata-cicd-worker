@@ -252,17 +252,11 @@ workflow_dispatch:
         - lpt
         # - aat        # 若有 AAT 环境，添加此行
         # - prod       # 若有 Prod 环境，添加此行
-    project:
-      description: 'Project name'
-      required: true
-      type: choice
-      default: <你的默认项目名>        # ← 必改：填一个实际项目名
-      options:
-        - <project-1>                  # ← 必改：列出所有租户项目名
-        - <project-2>                  # ← 必改
 ```
 
-同样检查 `.github/workflows/tapdata-rollback.yml` 里的 `workflow_dispatch.inputs.target_env.options` 和 `project.options`，保持一致。
+> 项目名无需配置：遵循"一仓一项目"约定，deploy/rollback 会自动检测仓库内唯一的 `*_tapdata_export/` 目录（多租户模式下由租户仓库传入），所以 `workflow_dispatch` 已不再有 `project` 输入。
+
+同样检查 `.github/workflows/tapdata-rollback.yml` 里的 `workflow_dispatch.inputs.target_env.options`（回滚另有必填项 `last_stable_tag`），环境列表保持一致。
 
 > 这两个 `workflow_dispatch` 入口仅在"从 Worker 仓库直接触发"时生效。正常多租户模式下由租户仓库的工作流调用 `workflow_call`，此处 options 不影响租户调用。因此若你完全不使用 Worker 直接触发，可保留默认值。
 

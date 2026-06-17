@@ -6,10 +6,12 @@ This repository is a **template**. Use it as the starting point for a customer-s
 
 ## Two operating modes
 
-- **Single-repo mode** — the worker repo *is* the deployment repo. Commit your `*_tapdata_export/` directories here; pushes to `main` deploy to dev, tags deploy to sit, and `workflow_dispatch` covers higher environments.
+- **Single-repo mode** — the worker repo *is* the deployment repo. Commit your project's `*_tapdata_export/` directory here; pushes to `main` deploy to dev, tags deploy to sit, and `workflow_dispatch` covers higher environments.
 - **Multi-tenant mode** — the worker repo is a shared engine. Each team owns its own tenant repo with TapData configs and a thin caller workflow (`tenant-template/.github/workflows/`) that invokes this worker via `workflow_call`.
 
 You can pick one mode and stick with it, or use both — the workflows are designed to support both transparently.
+
+> **Convention: one project per repo.** Each repository holds exactly one `{project}_tapdata_export/` directory, so the project is auto-detected — no manual input needed. To deploy multiple projects, give each its own repo. (If a repo accidentally contains more than one `*_tapdata_export/`, deploy logs a warning and falls back to the one matching `vars.PROJECT_NAME` or the repo name, else the first.)
 
 ## Quick start
 
@@ -90,7 +92,7 @@ tapdata-cicd-worker/
 | GitHub repo settings | Environments, secrets, variables, self-hosted runner. |
 | Tenant repos (multi-tenant only) | Drop in `tenant-template/.github/workflows/*` and replace `{WORKER_REPO}`. |
 
-The deploy and rollback workflows themselves require **no edits** for typical use — `project` is auto-detected from `*_tapdata_export/` paths on push, and tunable via `workflow_dispatch` input.
+The deploy and rollback workflows themselves require **no edits** for typical use — the project is auto-detected from the repo's single `*_tapdata_export/` directory (one project per repo), so `workflow_dispatch` only asks for the target environment. In multi-tenant mode the tenant caller passes the project explicitly (`vars.PROJECT_NAME`, else the tenant repo name).
 
 ## License
 
