@@ -1,3 +1,16 @@
+# ⏸ 已停用（parked）—— 旧版独立 job 部署 caller，保留完整自动触发，暂不生效
+# ============================================================================
+# 本文件放在 .github/disabled/ 下。GitHub 只扫描 .github/workflows/ 里的 YAML，
+# 因此本文件当前完全不触发、也不出现在 Actions 列表。
+#
+# 自动触发逻辑（push 到 main → dev / 推 tag → sit / 手动 dispatch）原样保留，未做
+# 任何删改。当前生效的是 matrix 版（.github/workflows/tapdata-deploy-matrix.yml）。
+#
+# 何时/如何重新启用：
+#   把本文件移回 .github/workflows/ 即可直接生效。
+#   ⚠ 移回前请先停用 matrix 版的自动触发（tapdata-deploy-matrix.yml 去掉 push/tags，
+#     或一并移走），否则同一次 push/tag 会同时触发新旧两条流水线、部署两遍。
+# ============================================================================
 name: TapData Deploy
 
 on:
