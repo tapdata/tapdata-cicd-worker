@@ -223,24 +223,12 @@ jobs:
             ${{ env.PROJECT }}_tapdata_export/vault.json
           retention-days: 1
 
-      - name: Upload vault (artifact v3 fallback)
-        id: upload_vault_v3
-        if: vars.VAULT_TRANSPORT != 'local' && steps.upload_vault_v4.outcome != 'success'
-        continue-on-error: true
-        uses: actions/upload-artifact@v3
-        with:
-          name: vault-and-export
-          path: |
-            ${{ env.PROJECT }}_tapdata_export/vault.json
-          retention-days: 1
-
       - name: Resolve vault transport
         id: resolve_transport
         run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/resolve-vault-transport.sh
         env:
           FORCED_TRANSPORT: ${{ vars.VAULT_TRANSPORT }}
           UPLOAD_V4_OUTCOME: ${{ steps.upload_vault_v4.outcome }}
-          UPLOAD_V3_OUTCOME: ${{ steps.upload_vault_v3.outcome }}
           DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
           VAULT_FILE: ${{ env.PROJECT }}_tapdata_export/vault.json
           RUNNER_NAME: ${{ runner.name }}
@@ -286,13 +274,6 @@ jobs:
       - name: Download vault (artifact v4)
         if: needs.preparation.outputs.vault_transport == 'artifact-v4'
         uses: actions/download-artifact@v4
-        with:
-          name: vault-and-export
-          path: ${{ env.PROJECT }}_tapdata_export
-
-      - name: Download vault (artifact v3)
-        if: needs.preparation.outputs.vault_transport == 'artifact-v3'
-        uses: actions/download-artifact@v3
         with:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export
@@ -376,13 +357,6 @@ jobs:
       - name: Download vault (artifact v4)
         if: needs.preparation.outputs.vault_transport == 'artifact-v4'
         uses: actions/download-artifact@v4
-        with:
-          name: vault-and-export
-          path: ${{ env.PROJECT }}_tapdata_export
-
-      - name: Download vault (artifact v3)
-        if: needs.preparation.outputs.vault_transport == 'artifact-v3'
-        uses: actions/download-artifact@v3
         with:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export
@@ -515,13 +489,6 @@ jobs:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export
 
-      - name: Download vault (artifact v3)
-        if: needs.preparation.outputs.vault_transport == 'artifact-v3'
-        uses: actions/download-artifact@v3
-        with:
-          name: vault-and-export
-          path: ${{ env.PROJECT }}_tapdata_export
-
       - name: Download vault (local file)
         if: needs.preparation.outputs.vault_transport == 'local'
         run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-transport.sh pull
@@ -605,13 +572,6 @@ jobs:
       - name: Download vault (artifact v4)
         if: needs.preparation.outputs.vault_transport == 'artifact-v4'
         uses: actions/download-artifact@v4
-        with:
-          name: vault-and-export
-          path: ${{ env.PROJECT }}_tapdata_export
-
-      - name: Download vault (artifact v3)
-        if: needs.preparation.outputs.vault_transport == 'artifact-v3'
-        uses: actions/download-artifact@v3
         with:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export
@@ -700,13 +660,6 @@ jobs:
       - name: Download vault (artifact v4)
         if: needs.preparation.outputs.vault_transport == 'artifact-v4'
         uses: actions/download-artifact@v4
-        with:
-          name: vault-and-export
-          path: ${{ env.PROJECT }}_tapdata_export
-
-      - name: Download vault (artifact v3)
-        if: needs.preparation.outputs.vault_transport == 'artifact-v3'
-        uses: actions/download-artifact@v3
         with:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export
@@ -800,13 +753,6 @@ jobs:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export
 
-      - name: Download vault (artifact v3)
-        if: needs.preparation.outputs.vault_transport == 'artifact-v3'
-        uses: actions/download-artifact@v3
-        with:
-          name: vault-and-export
-          path: ${{ env.PROJECT }}_tapdata_export
-
       - name: Download vault (local file)
         if: needs.preparation.outputs.vault_transport == 'local'
         run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-transport.sh pull
@@ -891,13 +837,6 @@ jobs:
       - name: Download vault (artifact v4)
         if: needs.preparation.outputs.vault_transport == 'artifact-v4'
         uses: actions/download-artifact@v4
-        with:
-          name: vault-and-export
-          path: ${{ env.PROJECT }}_tapdata_export
-
-      - name: Download vault (artifact v3)
-        if: needs.preparation.outputs.vault_transport == 'artifact-v3'
-        uses: actions/download-artifact@v3
         with:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export
