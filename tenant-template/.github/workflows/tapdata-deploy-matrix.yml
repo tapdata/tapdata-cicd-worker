@@ -14,6 +14,7 @@
 # 否则同一次 push/tag 会同时触发新旧两条流水线、部署两遍。
 # ============================================================================
 name: TapData Deploy (Matrix)
+run-name: "🚀 Deploy · ${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }} → ${{ inputs.target_env || (github.ref_type == 'tag' && 'sit' || 'dev') }} · ${{ github.event_name == 'workflow_dispatch' && format('manual by @{0}', github.actor) || (github.ref_type == 'tag' && format('tag {0}', github.ref_name) || format('branch {0}', github.ref_name)) }}"
 
 on:
   push:

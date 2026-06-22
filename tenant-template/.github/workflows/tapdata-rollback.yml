@@ -1,4 +1,5 @@
 name: TapData Rollback
+run-name: "⏪ Rollback · ${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }} → ${{ inputs.target_env }} · to ${{ inputs.last_stable_tag }} · by @${{ github.actor }}"
 
 on:
   workflow_dispatch:

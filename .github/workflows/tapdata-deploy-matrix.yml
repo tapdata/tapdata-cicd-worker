@@ -19,6 +19,7 @@
 #   通过 uses: 调用本文件。worker 仓库自身不会触发它，零干扰。
 # ============================================================================
 name: TapData Deploy (Matrix)
+run-name: "🚀 Deploy · ${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }} → ${{ inputs.target_env || (github.ref_type == 'tag' && 'sit' || 'dev') }} · ${{ github.event_name == 'workflow_dispatch' && format('manual by @{0}', github.actor) || (github.ref_type == 'tag' && format('tag {0}', github.ref_name) || format('branch {0}', github.ref_name)) }}"
 
 on:
   # 多租户模式：被租户仓库通过 workflow_call 调用
