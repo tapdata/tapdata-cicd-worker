@@ -1,24 +1,23 @@
-# TapData Deploy (Matrix) —— worker 端可复用 workflow，隐藏"自动跳过"的部署步骤
+# TapData Deploy (Matrix · HA / GHES, artifact v3) —— matrix 部署的 v3 变体
 # ============================================================================
-# 与 tapdata-deploy.yml 并存，不改动原文件，不影响现有 deploy 流程。
+# 与 tapdata-deploy-matrix.yml 完全一致，唯一区别：upload-artifact / download-artifact
+# 使用 @v3（matrix 标准版用 @v4）。用于 GitHub Enterprise Server (GHES) 环境——
+# 部分较旧的 GHES 不支持 artifact v4，只支持 v3。
 #
-# 与原版的唯一核心差异：
-#   原版：connections / FDM / MDM / APIs 各自是独立 deploy job，用 preview 的
-#         has_changes + if: 判断是否运行。无变更的资源 job 被 skip，但仍以灰色
-#         "已跳过"出现在运行图里，容易让人误解。
-#   本版：preview-all 之后构建"只含有变更资源"的动态 matrix，单个 deploy job 用
-#         strategy.matrix 展开。无变更的资源根本不会生成 matrix 腿 → 运行图里
-#         看不到它，不再显示灰色"已跳过"。
+# matrix 特性（与标准 matrix 版相同）：preview-all 之后构建"只含有变更资源"的动态
+#   matrix，单个 deploy job 用 strategy.matrix 展开。无变更的资源不会生成 matrix
+#   腿 → 运行图里看不到它，不再显示灰色"已跳过"。代价：4 个资源合并为 1 个 deploy
+#   job → 部署前人工审批从最多 4 次合并为 1 次（已确认接受）。
 #
-# 代价（已确认接受）：4 个资源合并为 1 个 deploy job → 部署前人工审批从最多 4 次
-#   合并为 1 次。全部资源都无变更时会有 1 个 "Deploy (已跳过)" 灰节点（表示无需
-#   部署），这是 GitHub Actions 机制下无法消除的，但与"部分跳过"的混乱不同。
+# 用法：本文件位于 .github/deploy/（选型库，不会自动触发）。要让 GHES 客户的 worker
+#   用它，把本文件拷到 .github/workflows/tapdata-deploy.yml 即可——租户 caller 的
+#   uses: 永远指向 .github/workflows/tapdata-deploy.yml@main，无需改动。
 #
-# 触发方式：仅 workflow_call（多租户）。实际运行 actions 的是租户仓库，由租户的
-#   caller workflow（tenant-template/.github/workflows/tapdata-deploy-matrix.yml）
-#   通过 uses: 调用本文件。worker 仓库自身不会触发它，零干扰。
+# 注：作业间传递 vault.json 的内部 transport 令牌仍沿用 `artifact-v4` 这个枚举值
+# （由 scripts/common/resolve-vault-transport.sh 决定，所有 deploy 变体共用该脚本），
+# 它只是"使用原生 artifact 传输"的内部标识，与 artifact action 的实际大版本无关。
 # ============================================================================
-name: TapData Deploy (Matrix)
+name: TapData Deploy (Matrix · HA · GHES)
 run-name: "🚀 Deploy · ${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }} → ${{ inputs.target_env || (github.ref_type == 'tag' && 'sit' || 'dev') }} · ${{ github.event_name == 'workflow_dispatch' && format('manual by @{0}', github.actor) || (github.ref_type == 'tag' && format('tag {0}', github.ref_name) || format('branch {0}', github.ref_name)) }}"
 
 # 并发守卫（worker 兜底）：同 project + 同 env 的部署串行化，防止并发导入同一 TapData 项目组。
@@ -210,11 +209,11 @@ jobs:
           VAULT_ENCRYPTION_KEY: ${{ secrets.VAULT_ENCRYPTION_KEY }}
           CRYPTO_ACTION: encrypt
 
-      - name: Upload vault (artifact v4)
+      - name: Upload vault (artifact v3)
         id: upload_vault_v4
         if: vars.VAULT_TRANSPORT != 'local'
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: vault-and-export
           path: |
@@ -269,9 +268,9 @@ jobs:
           token: ${{ secrets.GH_DEPLOY_TOKEN }}
           path: _worker
 
-      - name: Download vault (artifact v4)
+      - name: Download vault (artifact v3)
         if: needs.preparation.outputs.vault_transport == 'artifact-v4'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v3
         with:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export
@@ -356,9 +355,9 @@ jobs:
           token: ${{ secrets.GH_DEPLOY_TOKEN }}
           path: _worker
 
-      - name: Download vault (artifact v4)
+      - name: Download vault (artifact v3)
         if: needs.preparation.outputs.vault_transport == 'artifact-v4'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v3
         with:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export
@@ -553,9 +552,9 @@ jobs:
           token: ${{ secrets.GH_DEPLOY_TOKEN }}
           path: _worker
 
-      - name: Download vault (artifact v4)
+      - name: Download vault (artifact v3)
         if: needs.preparation.outputs.vault_transport == 'artifact-v4'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v3
         with:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export
@@ -638,9 +637,9 @@ jobs:
           token: ${{ secrets.GH_DEPLOY_TOKEN }}
           path: _worker
 
-      - name: Download vault (artifact v4)
+      - name: Download vault (artifact v3)
         if: needs.preparation.outputs.vault_transport == 'artifact-v4'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v3
         with:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export

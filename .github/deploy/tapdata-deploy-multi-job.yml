@@ -1,35 +1,32 @@
-# TapData Deploy (Matrix) —— worker 端可复用 workflow，隐藏"自动跳过"的部署步骤
-# ============================================================================
-# 与 tapdata-deploy.yml 并存，不改动原文件，不影响现有 deploy 流程。
-#
-# 与原版的唯一核心差异：
-#   原版：connections / FDM / MDM / APIs 各自是独立 deploy job，用 preview 的
-#         has_changes + if: 判断是否运行。无变更的资源 job 被 skip，但仍以灰色
-#         "已跳过"出现在运行图里，容易让人误解。
-#   本版：preview-all 之后构建"只含有变更资源"的动态 matrix，单个 deploy job 用
-#         strategy.matrix 展开。无变更的资源根本不会生成 matrix 腿 → 运行图里
-#         看不到它，不再显示灰色"已跳过"。
-#
-# 代价（已确认接受）：4 个资源合并为 1 个 deploy job → 部署前人工审批从最多 4 次
-#   合并为 1 次。全部资源都无变更时会有 1 个 "Deploy (已跳过)" 灰节点（表示无需
-#   部署），这是 GitHub Actions 机制下无法消除的，但与"部分跳过"的混乱不同。
-#
-# 触发方式：仅 workflow_call（多租户）。实际运行 actions 的是租户仓库，由租户的
-#   caller workflow（tenant-template/.github/workflows/tapdata-deploy-matrix.yml）
-#   通过 uses: 调用本文件。worker 仓库自身不会触发它，零干扰。
-# ============================================================================
-name: TapData Deploy (Matrix)
+name: TapData Deploy
 run-name: "🚀 Deploy · ${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }} → ${{ inputs.target_env || (github.ref_type == 'tag' && 'sit' || 'dev') }} · ${{ github.event_name == 'workflow_dispatch' && format('manual by @{0}', github.actor) || (github.ref_type == 'tag' && format('tag {0}', github.ref_name) || format('branch {0}', github.ref_name)) }}"
 
 # 并发守卫（worker 兜底）：同 project + 同 env 的部署串行化，防止并发导入同一 TapData 项目组。
-# 独立前缀 tapdata-deploy-worker- 与租户 caller 的并发组区分，避免同一次 run 的 caller/worker 互相阻塞；
-# caller 已配守卫时本组通常不触发，仅作租户漏配 caller 守卫时的最后防线。
+# 独立前缀 tapdata-deploy-worker- 与租户 caller 的并发组区分，避免同一次 run 的 caller/worker 互相阻塞。
+# 本文件兼容单仓库直触发与多租户 workflow_call，env 推导覆盖两种模式（caller_ref 判多租户 tag，github.ref_type 判单仓库 tag）。
 # 不同 project / 不同 env 仍可并行（TapData 保证跨 group 并发安全）。cancel-in-progress: false → 排队不打断。
 concurrency:
-  group: tapdata-deploy-worker-${{ inputs.project }}-${{ inputs.target_env || (startsWith(inputs.caller_ref, 'refs/tags/') && 'sit') || 'dev' }}
+  group: tapdata-deploy-worker-${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }}-${{ inputs.target_env || (startsWith(inputs.caller_ref, 'refs/tags/') && 'sit') || (github.ref_type == 'tag' && 'sit') || 'dev' }}
   cancel-in-progress: false
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '**/*tapdata_export/**'
+    tags:
+      - '**'
+  workflow_dispatch:
+    inputs:
+      target_env:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - dev
+          - sit
+          - lpt
+
   # 多租户模式：被租户仓库通过 workflow_call 调用
   workflow_call:
     inputs:
@@ -43,7 +40,7 @@ on:
         type: string
         default: ''
       caller_repo:
-        description: 'Caller tenant repo full name, e.g. your-org/your-tenant-repo'
+        description: 'Caller tenant repo full name, e.g. your-org/your-tenant-repo (leave empty in single-repo mode)'
         required: true
         type: string
       caller_sha:
@@ -68,17 +65,23 @@ on:
 
 env:
   DEPLOY_DIR: /tmp/tapdata-deploy-${{ github.run_id }}
+  # 单仓库模式：push/workflow_dispatch 时使用 ref_name
   # 多租户模式：workflow_call 时使用租户的 caller_sha
   DEPLOY_REF: ${{ inputs.caller_repo != '' && inputs.caller_sha || github.ref_name }}
-  # TARGET_ENV 推导逻辑：
+  # TARGET_ENV 推导逻辑（兼容单仓库和多租户）：
   #   workflow_call + target_env 已传入 → 使用 inputs.target_env
   #   workflow_call + caller_event=push + 非 tag ref → dev
   #   workflow_call + caller_event=push + tag ref → sit
+  #   单仓库 push 到 main → dev
+  #   单仓库 push tag → sit
+  #   单仓库 workflow_dispatch → inputs.target_env
   TARGET_ENV: >-
     ${{
       (inputs.caller_repo != '' && inputs.target_env != '') && inputs.target_env
       || (inputs.caller_repo != '' && inputs.caller_event == 'push' && !startsWith(inputs.caller_ref, 'refs/tags/')) && 'dev'
       || (inputs.caller_repo != '' && inputs.caller_event == 'push' && startsWith(inputs.caller_ref, 'refs/tags/')) && 'sit'
+      || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')) && 'dev'
+      || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) && 'sit'
       || inputs.target_env
     }}
 
@@ -95,6 +98,8 @@ jobs:
         (inputs.caller_repo != '' && inputs.target_env != '') && inputs.target_env
         || (inputs.caller_repo != '' && inputs.caller_event == 'push' && !startsWith(inputs.caller_ref, 'refs/tags/')) && 'dev'
         || (inputs.caller_repo != '' && inputs.caller_event == 'push' && startsWith(inputs.caller_ref, 'refs/tags/')) && 'sit'
+        || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')) && 'dev'
+        || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) && 'sit'
         || inputs.target_env
       }}
     outputs:
@@ -105,7 +110,9 @@ jobs:
       vault_transport: ${{ steps.resolve_transport.outputs.vault_transport }}
       prep_runner: ${{ steps.resolve_transport.outputs.prep_runner }}
     steps:
-      # Step 1: checkout 租户仓库（含 JSON 文件）到 workspace 根
+      # Step 1: checkout 数据源
+      #   - workflow_call：checkout 租户仓库（含 JSON 文件）到 workspace 根
+      #   - push/workflow_dispatch（单仓库）：checkout worker 自身（行为不变）
       - name: Checkout Data Repository
         uses: actions/checkout@v4
         with:
@@ -115,6 +122,8 @@ jobs:
           fetch-depth: 2
 
       # Step 2: 设置 SCRIPT_ROOT、REPO_ROOT 和 WORKER_REPO
+      #   - workflow_call：SCRIPT_ROOT=_worker，REPO_ROOT=workspace 根（含租户 JSON 文件）
+      #   - 单仓库：SCRIPT_ROOT=.，REPO_ROOT=worker 仓库根（与现有行为完全一致）
       - name: Set Runtime Paths
         run: |
           if [[ -n "${{ inputs.caller_repo }}" ]]; then
@@ -127,6 +136,7 @@ jobs:
           fi
 
       # Step 3: 仅 workflow_call 时，额外 checkout worker scripts 到 _worker/
+      #   - push/workflow_dispatch（单仓库）：跳过，scripts 已在 workspace 根
       - name: Checkout Worker Scripts
         if: inputs.caller_repo != ''
         uses: actions/checkout@v4
@@ -135,6 +145,7 @@ jobs:
           ref: main
           token: ${{ secrets.GH_DEPLOY_TOKEN }}
           path: _worker
+
 
       - name: Detect Project
         id: detect_project
@@ -310,7 +321,7 @@ jobs:
           TARGET_ENV: ${{ env.TARGET_ENV }}
 
   # ============================================================
-  # Job 3: Preview All Resources（并构建动态 deploy matrix）
+  # Job 3: Preview All Resources
   # ============================================================
   preview-all:
     name: Preview All Resources
@@ -320,14 +331,10 @@ jobs:
     env:
       PROJECT: ${{ needs.preparation.outputs.project }}
     outputs:
-      # 仅供参考/调试：各资源是否有变更
       connections_has_changes: ${{ steps.preview_connections.outputs.has_changes }}
       migrate_tasks_has_changes: ${{ steps.preview_migrate_tasks.outputs.has_changes }}
       sync_tasks_has_changes: ${{ steps.preview_sync_tasks.outputs.has_changes }}
       apis_has_changes: ${{ steps.preview_apis.outputs.has_changes }}
-      # 核心：动态 matrix（只含有变更的资源）+ 是否存在任何变更
-      deploy_matrix: ${{ steps.build_matrix.outputs.deploy_matrix }}
-      has_any_changes: ${{ steps.build_matrix.outputs.has_any_changes }}
     steps:
       - name: Checkout Data Repository
         uses: actions/checkout@v4
@@ -442,89 +449,20 @@ jobs:
           TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
           TARGET_ENV: ${{ env.TARGET_ENV }}
 
-      # 核心新增步骤：根据各 preview 的 has_changes，按固定部署顺序
-      # （connections → FDM → MDM → APIs）拼出只含"有变更资源"的 matrix。
-      # 输出：
-      #   deploy_matrix   = {"include":[ {key,label,archive,import_arg}, ... ]}
-      #   has_any_changes = true | false
-      # 空数组也输出为合法 JSON，配合下游 deploy job 的 if 守卫，避免空 matrix 报错。
-      - name: Build Deploy Matrix
-        id: build_matrix
-        run: |
-          set -euo pipefail
-          INCLUDE='[]'
-          N=0
-          # order 字段：按 add 调用顺序（= 真实执行顺序）递增编号。仅用于 GitHub 运行图
-          # 的显示排序——GitHub 把 matrix 腿按 job 名称字母序排列，给名字加数字前缀后，
-          # 字母序即等于 max-parallel:1 的执行序（connections→FDM→MDM→APIs）。
-          add() {
-            N=$((N+1))
-            INCLUDE=$(jq -c --argjson e "$1" --arg o "$N" '. + [($e + {order: $o})]' <<<"$INCLUDE")
-          }
-
-          if [[ "${{ steps.preview_connections.outputs.has_changes }}" == "true" ]]; then
-            add '{"key":"connections","label":"Connections","archive":"connections-export.tar","import_arg":"connections"}'
-          fi
-          if [[ "${{ steps.preview_migrate_tasks.outputs.has_changes }}" == "true" ]]; then
-            add '{"key":"migrate-tasks","label":"Data Replication(FDM)","archive":"tasks-export.tar","import_arg":"migrate/tasks"}'
-          fi
-          if [[ "${{ steps.preview_sync_tasks.outputs.has_changes }}" == "true" ]]; then
-            add '{"key":"sync-tasks","label":"Data Transformation(MDM)","archive":"tasks-export.tar","import_arg":"sync/tasks"}'
-          fi
-          if [[ "${{ steps.preview_apis.outputs.has_changes }}" == "true" ]]; then
-            add '{"key":"apis","label":"APIs","archive":"apis-export.tar","import_arg":"apis"}'
-          fi
-
-          COUNT=$(jq 'length' <<<"$INCLUDE")
-          MATRIX=$(jq -c -n --argjson inc "$INCLUDE" '{include: $inc}')
-
-          if [[ "$COUNT" -eq 0 ]]; then
-            echo "has_any_changes=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_any_changes=true" >> "$GITHUB_OUTPUT"
-          fi
-          echo "deploy_matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
-
-          echo "=== Build Deploy Matrix ==="
-          echo "Changed resources: ${COUNT}"
-          echo "deploy_matrix=${MATRIX}"
-
-      # 把"本次将部署 / 跳过"的清单写到 run 的 Summary 页，进一步降低误解。
-      - name: Write Deploy Plan Summary
-        run: |
-          {
-            echo "## 部署计划（本次实际执行）"
-            echo ""
-            echo "| 资源 | 状态 |"
-            echo "| --- | --- |"
-            echo "| Connections | $([[ '${{ steps.preview_connections.outputs.has_changes }}' == 'true' ]] && echo '✅ 将部署' || echo '— 无变更，跳过') |"
-            echo "| Data Replication(FDM) | $([[ '${{ steps.preview_migrate_tasks.outputs.has_changes }}' == 'true' ]] && echo '✅ 将部署' || echo '— 无变更，跳过') |"
-            echo "| Data Transformation(MDM) | $([[ '${{ steps.preview_sync_tasks.outputs.has_changes }}' == 'true' ]] && echo '✅ 将部署' || echo '— 无变更，跳过') |"
-            echo "| APIs | $([[ '${{ steps.preview_apis.outputs.has_changes }}' == 'true' ]] && echo '✅ 将部署' || echo '— 无变更，跳过') |"
-            echo ""
-            echo "> 运行图中只会出现\"将部署\"的资源；无变更的资源不再以灰色\"已跳过\"显示。"
-          } >> "$GITHUB_STEP_SUMMARY"
-
   # ============================================================
-  # Job 4: Deploy（统一动态 matrix，替代原 connections/FDM/MDM/APIs 四个 job）
-  #   - environment: deploy → 单次人工审批覆盖所有 matrix 腿
-  #   - max-parallel: 1 + 按 connections→FDM→MDM→APIs 顺序 → 严格串行
-  #   - fail-fast: true → 某腿失败即取消后续腿（等价于原依赖链"出错即停"）
-  #   - 只有有变更的资源才会成为 matrix 腿 → 运行图里看不到"已跳过"节点
+  # Job 4: Deploy Connections (requires approval)
   # ============================================================
-  deploy:
-    name: Deploy ${{ matrix.order }}. ${{ matrix.label }}
+  deploy-connections:
+    name: Deploy Connections
     runs-on: [self-hosted, tapdata]
     timeout-minutes: 15
     environment: deploy
     needs: [preparation, preview-all]
-    if: needs.preview-all.outputs.has_any_changes == 'true'
-    strategy:
-      max-parallel: 1
-      fail-fast: true
-      matrix: ${{ fromJSON(needs.preview-all.outputs.deploy_matrix) }}
     env:
       PROJECT: ${{ needs.preparation.outputs.project }}
+    if: needs.preview-all.outputs.connections_has_changes == 'true'
+    outputs:
+      changed_connections: ${{ steps.import_connections.outputs.changed_connections }}
     steps:
       - name: Checkout Data Repository
         uses: actions/checkout@v4
@@ -580,34 +518,301 @@ jobs:
         env:
           REPO_ROOT: ${{ env.REPO_ROOT }}
           DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
-          ARCHIVE_NAME: ${{ matrix.archive }}
+          ARCHIVE_NAME: connections-export.tar
           PROJECT: ${{ env.PROJECT }}
 
-      - name: Import ${{ matrix.label }} via TapData API
-        id: import_resource
-        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/import-resource.sh ${{ matrix.import_arg }}
+      - name: Import Connections via TapData API
+        id: import_connections
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/import-resource.sh connections
         env:
           DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
-          ARCHIVE_NAME: ${{ matrix.archive }}
+          ARCHIVE_NAME: connections-export.tar
           TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
           TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
           TARGET_ENV: ${{ env.TARGET_ENV }}
 
   # ============================================================
-  # Job 5: Deploy Group Info（始终收尾）
+  # Job 5: Deploy Migrate Tasks (requires approval)
   # ============================================================
-  deploy-group-info:
-    name: Deploy Group Info
+  deploy-migrate-tasks:
+    name: Deploy Data Replication(FDM)
     runs-on: [self-hosted, tapdata]
     timeout-minutes: 15
-    needs: [preparation, preview-all, deploy]
+    environment: deploy
+    needs: [preparation, preview-all, deploy-connections]
     env:
       PROJECT: ${{ needs.preparation.outputs.project }}
     if: >-
       !cancelled()
       && needs.preparation.result == 'success'
       && needs.preview-all.result == 'success'
-      && (needs.deploy.result == 'success' || needs.deploy.result == 'skipped' || needs.deploy.result == 'cancelled')
+      && (needs.deploy-connections.result == 'success' || needs.deploy-connections.result == 'skipped')
+      && needs.preview-all.outputs.migrate_tasks_has_changes == 'true'
+    outputs:
+      changed_migrate_tasks: ${{ steps.import_migrate_tasks.outputs.changed_migrate_tasks }}
+    steps:
+      - name: Checkout Data Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.caller_repo != '' && inputs.caller_repo || github.repository }}
+          ref: ${{ inputs.caller_repo != '' && inputs.caller_sha || env.DEPLOY_REF }}
+          token: ${{ secrets.GH_DEPLOY_TOKEN }}
+
+      - name: Set Runtime Paths
+        run: |
+          if [[ -n "${{ inputs.caller_repo }}" ]]; then
+            echo "WORKER_REPO=${{ inputs.worker_repo }}" >> "$GITHUB_ENV"
+            echo "SCRIPT_ROOT=_worker" >> "$GITHUB_ENV"
+            echo "REPO_ROOT=${{ github.workspace }}" >> "$GITHUB_ENV"
+          else
+            echo "SCRIPT_ROOT=." >> "$GITHUB_ENV"
+            echo "REPO_ROOT=$(pwd)" >> "$GITHUB_ENV"
+          fi
+
+      - name: Checkout Worker Scripts
+        if: inputs.caller_repo != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.WORKER_REPO }}
+          ref: main
+          token: ${{ secrets.GH_DEPLOY_TOKEN }}
+          path: _worker
+
+      - name: Download vault (artifact v4)
+        if: needs.preparation.outputs.vault_transport == 'artifact-v4'
+        uses: actions/download-artifact@v4
+        with:
+          name: vault-and-export
+          path: ${{ env.PROJECT }}_tapdata_export
+
+      - name: Download vault (local file)
+        if: needs.preparation.outputs.vault_transport == 'local'
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-transport.sh pull
+        env:
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          VAULT_FILE: ${{ env.PROJECT }}_tapdata_export/vault.json
+          PREP_RUNNER: ${{ needs.preparation.outputs.prep_runner }}
+
+      - name: Decrypt vault.json
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-crypto.sh
+        env:
+          VAULT_FILE: ${{ env.PROJECT }}_tapdata_export/vault.json
+          VAULT_ENCRYPTION_KEY: ${{ secrets.VAULT_ENCRYPTION_KEY }}
+          CRYPTO_ACTION: decrypt
+
+      - name: Compress Export Files
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/compress-files.sh
+        env:
+          REPO_ROOT: ${{ env.REPO_ROOT }}
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          ARCHIVE_NAME: tasks-export.tar
+          PROJECT: ${{ env.PROJECT }}
+
+      - name: Import Migrate Tasks via TapData API
+        id: import_migrate_tasks
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/import-resource.sh migrate/tasks
+        env:
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          ARCHIVE_NAME: tasks-export.tar
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
+          TARGET_ENV: ${{ env.TARGET_ENV }}
+
+  # ============================================================
+  # Job 6: Deploy Sync Tasks (requires approval)
+  # ============================================================
+  deploy-sync-tasks:
+    name: Deploy Data Transformation(MDM)
+    runs-on: [self-hosted, tapdata]
+    timeout-minutes: 15
+    environment: deploy
+    needs: [preparation, preview-all, deploy-connections, deploy-migrate-tasks]
+    env:
+      PROJECT: ${{ needs.preparation.outputs.project }}
+    if: >-
+      !cancelled()
+      && needs.preparation.result == 'success'
+      && needs.preview-all.result == 'success'
+      && (needs.deploy-connections.result == 'success' || needs.deploy-connections.result == 'skipped')
+      && (needs.deploy-migrate-tasks.result == 'success' || needs.deploy-migrate-tasks.result == 'skipped')
+      && needs.preview-all.outputs.sync_tasks_has_changes == 'true'
+    outputs:
+      changed_sync_tasks: ${{ steps.import_sync_tasks.outputs.changed_sync_tasks }}
+    steps:
+      - name: Checkout Data Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.caller_repo != '' && inputs.caller_repo || github.repository }}
+          ref: ${{ inputs.caller_repo != '' && inputs.caller_sha || env.DEPLOY_REF }}
+          token: ${{ secrets.GH_DEPLOY_TOKEN }}
+
+      - name: Set Runtime Paths
+        run: |
+          if [[ -n "${{ inputs.caller_repo }}" ]]; then
+            echo "WORKER_REPO=${{ inputs.worker_repo }}" >> "$GITHUB_ENV"
+            echo "SCRIPT_ROOT=_worker" >> "$GITHUB_ENV"
+            echo "REPO_ROOT=${{ github.workspace }}" >> "$GITHUB_ENV"
+          else
+            echo "SCRIPT_ROOT=." >> "$GITHUB_ENV"
+            echo "REPO_ROOT=$(pwd)" >> "$GITHUB_ENV"
+          fi
+
+      - name: Checkout Worker Scripts
+        if: inputs.caller_repo != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.WORKER_REPO }}
+          ref: main
+          token: ${{ secrets.GH_DEPLOY_TOKEN }}
+          path: _worker
+
+      - name: Download vault (artifact v4)
+        if: needs.preparation.outputs.vault_transport == 'artifact-v4'
+        uses: actions/download-artifact@v4
+        with:
+          name: vault-and-export
+          path: ${{ env.PROJECT }}_tapdata_export
+
+      - name: Download vault (local file)
+        if: needs.preparation.outputs.vault_transport == 'local'
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-transport.sh pull
+        env:
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          VAULT_FILE: ${{ env.PROJECT }}_tapdata_export/vault.json
+          PREP_RUNNER: ${{ needs.preparation.outputs.prep_runner }}
+
+      - name: Decrypt vault.json
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-crypto.sh
+        env:
+          VAULT_FILE: ${{ env.PROJECT }}_tapdata_export/vault.json
+          VAULT_ENCRYPTION_KEY: ${{ secrets.VAULT_ENCRYPTION_KEY }}
+          CRYPTO_ACTION: decrypt
+
+      - name: Compress Export Files
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/compress-files.sh
+        env:
+          REPO_ROOT: ${{ env.REPO_ROOT }}
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          ARCHIVE_NAME: tasks-export.tar
+          PROJECT: ${{ env.PROJECT }}
+
+      - name: Import Sync Tasks via TapData API
+        id: import_sync_tasks
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/import-resource.sh sync/tasks
+        env:
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          ARCHIVE_NAME: tasks-export.tar
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
+          TARGET_ENV: ${{ env.TARGET_ENV }}
+
+  # ============================================================
+  # Job 7: Deploy APIs (requires approval)
+  # ============================================================
+  deploy-apis:
+    name: Deploy APIs
+    runs-on: [self-hosted, tapdata]
+    timeout-minutes: 15
+    environment: deploy
+    needs: [preparation, preview-all, deploy-connections, deploy-migrate-tasks, deploy-sync-tasks]
+    env:
+      PROJECT: ${{ needs.preparation.outputs.project }}
+    if: >-
+      !cancelled()
+      && needs.preparation.result == 'success'
+      && needs.preview-all.result == 'success'
+      && (needs.deploy-connections.result == 'success' || needs.deploy-connections.result == 'skipped')
+      && (needs.deploy-migrate-tasks.result == 'success' || needs.deploy-migrate-tasks.result == 'skipped')
+      && (needs.deploy-sync-tasks.result == 'success' || needs.deploy-sync-tasks.result == 'skipped')
+      && needs.preview-all.outputs.apis_has_changes == 'true'
+    outputs:
+      changed_apis: ${{ steps.import_apis.outputs.changed_apis }}
+    steps:
+      - name: Checkout Data Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.caller_repo != '' && inputs.caller_repo || github.repository }}
+          ref: ${{ inputs.caller_repo != '' && inputs.caller_sha || env.DEPLOY_REF }}
+          token: ${{ secrets.GH_DEPLOY_TOKEN }}
+
+      - name: Set Runtime Paths
+        run: |
+          if [[ -n "${{ inputs.caller_repo }}" ]]; then
+            echo "WORKER_REPO=${{ inputs.worker_repo }}" >> "$GITHUB_ENV"
+            echo "SCRIPT_ROOT=_worker" >> "$GITHUB_ENV"
+            echo "REPO_ROOT=${{ github.workspace }}" >> "$GITHUB_ENV"
+          else
+            echo "SCRIPT_ROOT=." >> "$GITHUB_ENV"
+            echo "REPO_ROOT=$(pwd)" >> "$GITHUB_ENV"
+          fi
+
+      - name: Checkout Worker Scripts
+        if: inputs.caller_repo != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.WORKER_REPO }}
+          ref: main
+          token: ${{ secrets.GH_DEPLOY_TOKEN }}
+          path: _worker
+
+      - name: Download vault (artifact v4)
+        if: needs.preparation.outputs.vault_transport == 'artifact-v4'
+        uses: actions/download-artifact@v4
+        with:
+          name: vault-and-export
+          path: ${{ env.PROJECT }}_tapdata_export
+
+      - name: Download vault (local file)
+        if: needs.preparation.outputs.vault_transport == 'local'
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-transport.sh pull
+        env:
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          VAULT_FILE: ${{ env.PROJECT }}_tapdata_export/vault.json
+          PREP_RUNNER: ${{ needs.preparation.outputs.prep_runner }}
+
+      - name: Decrypt vault.json
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/vault-crypto.sh
+        env:
+          VAULT_FILE: ${{ env.PROJECT }}_tapdata_export/vault.json
+          VAULT_ENCRYPTION_KEY: ${{ secrets.VAULT_ENCRYPTION_KEY }}
+          CRYPTO_ACTION: decrypt
+
+      - name: Compress Export Files
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/compress-files.sh
+        env:
+          REPO_ROOT: ${{ env.REPO_ROOT }}
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          ARCHIVE_NAME: apis-export.tar
+          PROJECT: ${{ env.PROJECT }}
+
+      - name: Import APIs via TapData API
+        id: import_apis
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/import-resource.sh apis
+        env:
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          ARCHIVE_NAME: apis-export.tar
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
+          TARGET_ENV: ${{ env.TARGET_ENV }}
+
+  # ============================================================
+  # Job 8: Deploy Group Info
+  # ============================================================
+  deploy-group-info:
+    name: Deploy Group Info
+    runs-on: [self-hosted, tapdata]
+    timeout-minutes: 15
+    needs: [preparation, preview-all, deploy-connections, deploy-migrate-tasks, deploy-sync-tasks, deploy-apis]
+    env:
+      PROJECT: ${{ needs.preparation.outputs.project }}
+    if: >-
+      !cancelled()
+      && needs.preparation.result == 'success'
+      && needs.preview-all.result == 'success'
+      && (needs.deploy-connections.result == 'success' || needs.deploy-connections.result == 'skipped' || needs.deploy-connections.result == 'cancelled')
+      && (needs.deploy-migrate-tasks.result == 'success' || needs.deploy-migrate-tasks.result == 'skipped' || needs.deploy-migrate-tasks.result == 'cancelled')
+      && (needs.deploy-sync-tasks.result == 'success' || needs.deploy-sync-tasks.result == 'skipped' || needs.deploy-sync-tasks.result == 'cancelled')
+      && (needs.deploy-apis.result == 'success' || needs.deploy-apis.result == 'skipped' || needs.deploy-apis.result == 'cancelled')
     outputs:
       changed_groupInfo: ${{ steps.import_group_info.outputs.changed_groupInfo }}
     steps:
@@ -679,7 +884,7 @@ jobs:
           TARGET_ENV: ${{ env.TARGET_ENV }}
 
   # ============================================================
-  # Job 6: Cleanup (always runs — removes vault credentials from runner /tmp)
+  # Job 9: Cleanup (always runs — removes vault credentials from runner /tmp)
   # ============================================================
   cleanup:
     name: Cleanup
@@ -689,7 +894,10 @@ jobs:
       - preparation
       - deploy-users
       - preview-all
-      - deploy
+      - deploy-connections
+      - deploy-migrate-tasks
+      - deploy-sync-tasks
+      - deploy-apis
       - deploy-group-info
     if: always()
     steps:

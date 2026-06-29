@@ -21,6 +21,14 @@
 name: TapData Deploy (Matrix)
 run-name: "🚀 Deploy · ${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }} → ${{ inputs.target_env || (github.ref_type == 'tag' && 'sit' || 'dev') }} · ${{ github.event_name == 'workflow_dispatch' && format('manual by @{0}', github.actor) || (github.ref_type == 'tag' && format('tag {0}', github.ref_name) || format('branch {0}', github.ref_name)) }}"
 
+# 并发守卫（worker 兜底）：同 project + 同 env 的部署串行化，防止并发导入同一 TapData 项目组。
+# 独立前缀 tapdata-deploy-worker- 与租户 caller 的并发组区分，避免同一次 run 的 caller/worker 互相阻塞；
+# caller 已配守卫时本组通常不触发，仅作租户漏配 caller 守卫时的最后防线。
+# 不同 project / 不同 env 仍可并行（TapData 保证跨 group 并发安全）。cancel-in-progress: false → 排队不打断。
+concurrency:
+  group: tapdata-deploy-worker-${{ inputs.project }}-${{ inputs.target_env || (startsWith(inputs.caller_ref, 'refs/tags/') && 'sit') || 'dev' }}
+  cancel-in-progress: false
+
 on:
   # 多租户模式：被租户仓库通过 workflow_call 调用
   workflow_call:

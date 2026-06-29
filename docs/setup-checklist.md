@@ -127,7 +127,8 @@ Configure at `{team_org}` > **Settings** > **Secrets and variables** > **Actions
 
 - [ ] `SIT_TAPDATA_URL` (e.g. `http://10.0.0.1:3030`)
 - [ ] `LPT_TAPDATA_URL`
-- [ ] `VAULT_TRANSPORT` — *(optional)* how vault.json is passed between Jobs. `auto` (default, unset): try `upload-artifact@v4`, fall back to `@v3` (works on older GHES that don't support v4), then fall back to a local file if both are unavailable; `local`: skip artifacts entirely (no error log noise) — **use this on a single self-hosted runner where artifacts are not supported**; `artifact`: force native artifacts (v4 → v3) and **never** use the local file — fails if both versions are unavailable. Local-file mode requires all Jobs to run on the **same** runner.
+- [ ] `VAULT_TRANSPORT` — *(optional)* how vault.json is passed between Jobs. `auto` (default, unset): try `upload-artifact@v4`, and if it is unavailable fall back to a local file; `local`: skip artifacts entirely (no error log noise) — **use this on a single self-hosted runner where artifacts are not supported**; `artifact`: force native `upload-artifact@v4` and **never** use the local file — fails if v4 is unavailable. Local-file mode requires all Jobs to run on the **same** runner.
+  > **GHES / older servers that only support artifact v3:** the live `.github/workflows/tapdata-deploy.yml` uses artifact **v4** and has no inline v3 fallback. Promote the **`.github/deploy/tapdata-deploy-matrix-artifact-v3.yml`** variant (artifact pinned to v3) into `.github/workflows/tapdata-deploy.yml` instead — see `docs/cicd-delivery-guide.md` §2.1.1.
 
 ### 2.3 Per-Tenant Repository Configuration
 

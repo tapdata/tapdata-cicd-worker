@@ -7,7 +7,8 @@
 #   - workflow_dispatch 手动触发 → 部署到所选环境
 #
 # 部署逻辑是多租户：实际运行 actions 的是本租户仓库，通过 uses: 调用 worker 仓库的
-# tapdata-deploy-matrix.yml（worker 作为共享部署引擎被复用）。
+# .github/workflows/tapdata-deploy.yml（固定入口；其内容当前是 matrix 变体，由 worker
+# 侧从 .github/deploy/ 选型库提升而来）。worker 作为共享部署引擎被复用。
 #
 # 重要：旧的 tapdata-deploy.yml caller 已移到 .github/disabled/（自动触发原样保留但
 # 不生效）。若日后要把它移回 .github/workflows/ 启用，需先停用本 matrix 版的 push/tags，
@@ -15,6 +16,13 @@
 # ============================================================================
 name: TapData Deploy (Matrix)
 run-name: "🚀 Deploy · ${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }} → ${{ inputs.target_env || (github.ref_type == 'tag' && 'sit' || 'dev') }} · ${{ github.event_name == 'workflow_dispatch' && format('manual by @{0}', github.actor) || (github.ref_type == 'tag' && format('tag {0}', github.ref_name) || format('branch {0}', github.ref_name)) }}"
+
+# 并发守卫：同 project + 同目标 env 的部署串行化，防止并发导入同一 TapData 项目组。
+# 不同 project / 不同 env 仍可并行（TapData 服务端保证跨 group 并发导入安全）。
+# cancel-in-progress: false → 绝不中断进行中的部署，新触发排队等待（含等待人工审批期间）。
+concurrency:
+  group: tapdata-deploy-${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }}-${{ inputs.target_env || (github.ref_type == 'tag' && 'sit' || 'dev') }}
+  cancel-in-progress: false
 
 on:
   push:
@@ -42,7 +50,7 @@ on:
 jobs:
   deploy:
     # TODO: Replace {WORKER_REPO} with actual org/repo, e.g. your-org/tapdata-cicd-worker
-    uses: "{WORKER_REPO}/.github/workflows/tapdata-deploy-matrix.yml@main"
+    uses: "{WORKER_REPO}/.github/workflows/tapdata-deploy.yml@main"
     with:
       project: ${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }}
       target_env: ${{ inputs.target_env || '' }}

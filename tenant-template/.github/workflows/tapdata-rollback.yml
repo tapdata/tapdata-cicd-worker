@@ -1,6 +1,15 @@
 name: TapData Rollback
 run-name: "⏪ Rollback · ${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }} → ${{ inputs.target_env }} · to ${{ inputs.last_stable_tag }} · by @${{ github.actor }}"
 
+# 并发守卫：与 deploy 共享同一并发组 key（tapdata-deploy-{project}-{env}），使同一
+# project + env 的 deploy 与 rollback 互斥——绝不允许回滚与部署同时操作同一 TapData
+# 项目组（比两个并发 deploy 更危险：rollback 会 stop+clean+reimport）。前缀刻意与
+# deploy caller 一致，不用 tapdata-rollback-，就是为了让两者落进同一个 group 互相排队。
+# 不同 project / 不同 env 仍可并行。cancel-in-progress: false → 排队不打断（含等待人工审批期间）。
+concurrency:
+  group: tapdata-deploy-${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }}-${{ inputs.target_env }}
+  cancel-in-progress: false
+
 on:
   workflow_dispatch:
     inputs:

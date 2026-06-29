@@ -1,6 +1,15 @@
 name: TapData Rollback
 run-name: "⏪ Rollback · ${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }} → ${{ inputs.target_env }} · to ${{ inputs.last_stable_tag }} · by @${{ github.actor }}"
 
+# 并发守卫（worker 兜底）：与 deploy 的 worker 组共享同一 key（tapdata-deploy-worker-{project}-{env}），
+# 使同 project + env 的 deploy 与 rollback 在 worker 层也互斥；独立 -worker- 前缀避免同一次 run 的
+# caller/worker 自我阻塞。caller 已配守卫时本组通常不触发，仅作租户漏配 caller 守卫时的最后防线。
+# project 用 inputs.project||vars.PROJECT_NAME||repo 兼容单仓库与多租户两种模式（与 deploy multi-job worker 对齐）。
+# 不同 project / 不同 env 仍可并行。cancel-in-progress: false → 排队不打断。
+concurrency:
+  group: tapdata-deploy-worker-${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }}-${{ inputs.target_env }}
+  cancel-in-progress: false
+
 on:
   workflow_dispatch:
     inputs:

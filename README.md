@@ -42,9 +42,13 @@ For full step-by-step instructions, see the documents under `docs/` (Chinese, wi
 ```
 tapdata-cicd-worker/
 ├── .github/
-│   └── workflows/                          # Reusable workflow definitions (used by this repo and by tenant callers)
-│       ├── tapdata-deploy.yml              # TapData deployment workflow (single-repo + workflow_call)
-│       └── tapdata-rollback.yml            # TapData rollback workflow (single-repo + workflow_call)
+│   ├── workflows/                          # ACTIVE workflows — only files here auto-trigger / are callable via uses:
+│   │   ├── tapdata-deploy.yml              # The LIVE deploy; tenant callers always point here. Swap its body from .github/deploy/ to change variant
+│   │   └── tapdata-rollback.yml            # TapData rollback workflow
+│   └── deploy/                             # Catalog of deploy variants (INERT — copy ONE over workflows/tapdata-deploy.yml to activate)
+│       ├── tapdata-deploy-multi-job.yml             # multi-job · artifact v4 (one job per resource; gray "skipped" nodes)
+│       ├── tapdata-deploy-matrix.yml                # matrix · artifact v4 (consolidated job; hides skipped; single approval)
+│       └── tapdata-deploy-matrix-artifact-v3.yml    # matrix · artifact v3 (HA / GHES — older GHES lacks artifact v4)
 ├── conf/
 │   └── Task_Run_Order.json                 # Task DAG execution order — replace with your own
 ├── scripts/                                # Automation scripts invoked by the workflows
