@@ -1,13 +1,13 @@
 name: TapData Rollback
 run-name: "⏪ Rollback · ${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }} → ${{ inputs.target_env }} · to ${{ inputs.last_stable_tag }} · by @${{ github.actor }}"
 
-# 并发守卫：与 deploy 共享同一并发组 key（tapdata-deploy-{project}-{env}），使同一
-# project + env 的 deploy 与 rollback 互斥——绝不允许回滚与部署同时操作同一 TapData
-# 项目组（比两个并发 deploy 更危险：rollback 会 stop+clean+reimport）。前缀刻意与
-# deploy caller 一致，不用 tapdata-rollback-，就是为了让两者落进同一个 group 互相排队。
-# 不同 project / 不同 env 仍可并行。cancel-in-progress: false → 排队不打断（含等待人工审批期间）。
+# 并发守卫（worker 兜底）：与 deploy 的 worker 组共享同一 key（tapdata-deploy-worker-{project}-{env}），
+# 使同 project + env 的 deploy 与 rollback 在 worker 层也互斥；独立 -worker- 前缀避免同一次 run 的
+# caller/worker 自我阻塞。caller 已配守卫时本组通常不触发，仅作租户漏配 caller 守卫时的最后防线。
+# project 用 inputs.project||vars.PROJECT_NAME||repo 兼容单仓库与多租户两种模式（与 deploy multi-job worker 对齐）。
+# 不同 project / 不同 env 仍可并行。cancel-in-progress: false → 排队不打断。
 concurrency:
-  group: tapdata-deploy-${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }}-${{ inputs.target_env }}
+  group: tapdata-deploy-worker-${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }}-${{ inputs.target_env }}
   cancel-in-progress: false
 
 on:
@@ -26,20 +26,411 @@ on:
         description: 'Tag to rollback to (required)'
         required: true
         type: string
+  workflow_call:
+    inputs:
+      target_env:
+        description: 'Target environment'
+        required: true
+        type: string
+      last_stable_tag:
+        description: 'Tag to rollback to (required)'
+        required: true
+        type: string
       project:
-        description: 'Project name (留空则取 vars.PROJECT_NAME，再回落到仓库名)'
+        description: 'Project name'
+        required: true
+        type: string
+      caller_repo:
+        description: 'Caller tenant repo full name, e.g. your-org/your-tenant-repo (leave empty in single-repo mode)'
         required: false
         type: string
         default: ''
+      worker_repo:
+        description: 'Worker repo full name, e.g. your-org/tapdata-cicd-worker (used to checkout worker scripts)'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      GH_DEPLOY_TOKEN:
+        required: true
+
+env:
+  ROLLBACK_DIR: /tmp/tapdata-rollback-${{ github.run_id }}
 
 jobs:
-  rollback:
-    # TODO: Replace {WORKER_REPO} with actual org/repo, e.g. your-org/tapdata-cicd-worker
-    uses: "tap-jason/jason_test_cicd/.github/workflows/tapdata-rollback.yml@main"
-    with:
-      project: ${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }}
-      target_env: ${{ inputs.target_env }}
-      last_stable_tag: ${{ inputs.last_stable_tag }}
-      caller_repo: ${{ github.repository }}
-      worker_repo: "tap-jason/jason_test_cicd"
-    secrets: inherit
+  # ============================================================
+  # Job 1: Preparation Phase
+  # ============================================================
+  preparation:
+    name: Preparation Phase
+    runs-on: [self-hosted, tapdata]
+    timeout-minutes: 5
+    environment: ${{ inputs.target_env }}
+    outputs:
+      tapdata_token: ${{ steps.get_token.outputs.tapdata_token }}
+      tapdata_url: ${{ steps.resolve_config.outputs.tapdata_url }}
+      last_stable_tag: ${{ steps.resolve_tag.outputs.last_stable_tag }}
+      task_names: ${{ steps.collect_names.outputs.task_names }}
+      api_names: ${{ steps.collect_names.outputs.api_names }}
+      project: ${{ steps.detect_project.outputs.project }}
+    steps:
+      # 数据仓库 checkout：
+      #   - 单仓库模式：worker == 数据仓库，checkout 自身默认分支
+      #   - 多租户模式：checkout 租户仓库的默认分支（含 {project}_tapdata_export/）
+      # 注意：这里 checkout 的是"当前主线"，不是 last_stable_tag。
+      # 收集任务/API 名时使用当前主线，确保把"上一次部署已经在环境里"的资源都纳入清理范围。
+      # 稳定 tag 的 checkout 在 import-and-activate Job 内完成。
+      - name: Checkout Data Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.caller_repo != '' && inputs.caller_repo || github.repository }}
+          token: ${{ secrets.GH_DEPLOY_TOKEN }}
+          fetch-depth: 0
+
+      # 多租户模式：额外 checkout worker scripts 到 _worker/
+      - name: Set Runtime Paths
+        run: |
+          if [[ -n "${{ inputs.caller_repo }}" ]]; then
+            echo "WORKER_REPO=${{ inputs.worker_repo }}" >> "$GITHUB_ENV"
+            echo "SCRIPT_ROOT=_worker" >> "$GITHUB_ENV"
+            echo "REPO_ROOT=${{ github.workspace }}" >> "$GITHUB_ENV"
+          else
+            echo "SCRIPT_ROOT=." >> "$GITHUB_ENV"
+            echo "REPO_ROOT=$(pwd)" >> "$GITHUB_ENV"
+          fi
+
+      - name: Checkout Worker Scripts
+        if: inputs.caller_repo != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.WORKER_REPO }}
+          ref: main
+          token: ${{ secrets.GH_DEPLOY_TOKEN }}
+          path: _worker
+
+      # 项目自动检测（与 deploy 一致）：workflow_call 由租户传入；手动 dispatch 为空 → 扫描唯一的 *_tapdata_export/
+      - name: Detect Project
+        id: detect_project
+        run: bash $SCRIPT_ROOT/scripts/tapdata-deploy/detect-project.sh
+        env:
+          INPUT_PROJECT: ${{ inputs.project }}
+          PROJECT_NAME:  ${{ vars.PROJECT_NAME }}
+
+      - name: Check tapdata_export Directory
+        run: bash $SCRIPT_ROOT/scripts/common/check-export-dir.sh
+        env:
+          EXPORT_DIR: ${{ env.REPO_ROOT }}/${{ env.PROJECT }}_tapdata_export
+
+      - name: Validate Input Parameters
+        run: bash $SCRIPT_ROOT/scripts/tapdata-rollback/validate-inputs.sh
+        env:
+          REPO_ROOT: ${{ env.REPO_ROOT }}
+          TARGET_ENV: ${{ inputs.target_env }}
+          LAST_STABLE_TAG: ${{ inputs.last_stable_tag }}
+          PROJECT: ${{ env.PROJECT }}
+
+      # 收集当前主线上属于本项目的任务/API 名，把回滚的 stop/unpublish/clean 范围严格限定在本项目。
+      # 若不传名字，stop-tasks.sh / unpublish-apis.sh 会进入"全部"模式，
+      # 在多项目共享同一环境时会误伤其他项目的资源。
+      - name: Collect Task/API Names from Export
+        id: collect_names
+        run: bash $SCRIPT_ROOT/scripts/tapdata-rollback/collect-names.sh
+        env:
+          REPO_ROOT: ${{ env.REPO_ROOT }}
+          PROJECT: ${{ env.PROJECT }}
+
+      - name: Resolve TapData Connection Config
+        id: resolve_config
+        run: |
+          case "${TARGET_ENV}" in
+            dev)  URL="${DEV_TAPDATA_URL:-${TAPDATA_URL}}"  ; CODE="${DEV_TAPDATA_ACCESS_CODE:-${TAPDATA_ACCESS_CODE}}" ;;
+            sit)  URL="${SIT_TAPDATA_URL:-${TAPDATA_URL}}"  ; CODE="${SIT_TAPDATA_ACCESS_CODE:-${TAPDATA_ACCESS_CODE}}" ;;
+            lpt)  URL="${LPT_TAPDATA_URL:-${TAPDATA_URL}}"  ; CODE="${LPT_TAPDATA_ACCESS_CODE:-${TAPDATA_ACCESS_CODE}}" ;;
+            aat)  URL="${AAT_TAPDATA_URL:-${TAPDATA_URL}}"  ; CODE="${AAT_TAPDATA_ACCESS_CODE:-${TAPDATA_ACCESS_CODE}}" ;;
+            prod) URL="${PROD_TAPDATA_URL:-${TAPDATA_URL}}" ; CODE="${PROD_TAPDATA_ACCESS_CODE:-${TAPDATA_ACCESS_CODE}}" ;;
+            *)    URL="${TAPDATA_URL}" ; CODE="${TAPDATA_ACCESS_CODE}" ;;
+          esac
+          echo "tapdata_url=${URL}" >> "${GITHUB_OUTPUT}"
+          # F6: accesscode 仅在同 Job 内被下一步消费，写入 $GITHUB_ENV 而非 $GITHUB_OUTPUT，
+          # 这样 secret 严格保留在 runner 进程内，不会出现在 step output 数据中（即使已 mask）。
+          echo "::add-mask::${CODE}"
+          echo "TAPDATA_ACCESSCODE=${CODE}" >> "${GITHUB_ENV}"
+        env:
+          TARGET_ENV: ${{ inputs.target_env }}
+          TAPDATA_URL:              ${{ vars.TAPDATA_URL }}
+          DEV_TAPDATA_URL:          ${{ vars.DEV_TAPDATA_URL }}
+          SIT_TAPDATA_URL:          ${{ vars.SIT_TAPDATA_URL }}
+          LPT_TAPDATA_URL:          ${{ vars.LPT_TAPDATA_URL }}
+          AAT_TAPDATA_URL:          ${{ vars.AAT_TAPDATA_URL }}
+          PROD_TAPDATA_URL:         ${{ vars.PROD_TAPDATA_URL }}
+          TAPDATA_ACCESS_CODE:      ${{ secrets.TAPDATA_ACCESS_CODE }}
+          DEV_TAPDATA_ACCESS_CODE:  ${{ secrets.DEV_TAPDATA_ACCESS_CODE }}
+          SIT_TAPDATA_ACCESS_CODE:  ${{ secrets.SIT_TAPDATA_ACCESS_CODE }}
+          LPT_TAPDATA_ACCESS_CODE:  ${{ secrets.LPT_TAPDATA_ACCESS_CODE }}
+          AAT_TAPDATA_ACCESS_CODE:  ${{ secrets.AAT_TAPDATA_ACCESS_CODE }}
+          PROD_TAPDATA_ACCESS_CODE: ${{ secrets.PROD_TAPDATA_ACCESS_CODE }}
+
+      - name: Get TapData Token
+        id: get_token
+        run: bash $SCRIPT_ROOT/scripts/common/get-token.sh
+        env:
+          TARGET_ENV: ${{ inputs.target_env }}
+          TAPDATA_URL: ${{ steps.resolve_config.outputs.tapdata_url }}
+          # TAPDATA_ACCESSCODE 由上一步通过 $GITHUB_ENV 注入到 Job 全局环境，无需在此显式声明
+
+      - name: Validate Tag Exists
+        id: resolve_tag
+        run: bash $SCRIPT_ROOT/scripts/tapdata-rollback/resolve-tag.sh
+        env:
+          LAST_STABLE_TAG: ${{ inputs.last_stable_tag }}
+          CALLER_REPO: ${{ inputs.caller_repo }}
+          GH_TOKEN: ${{ secrets.GH_DEPLOY_TOKEN }}
+
+  # ============================================================
+  # Job 2: Stop and Clean Resources
+  # ============================================================
+  stop-and-clean:
+    name: Stop and Clean Resources
+    runs-on: [self-hosted, tapdata]
+    timeout-minutes: 30
+    environment: ${{ inputs.target_env }}
+    needs: preparation
+    outputs:
+      stopped_tasks_file: ${{ steps.stop_tasks.outputs.stopped_tasks_file }}
+      unpublished_apis_file: ${{ steps.unpublish_apis.outputs.unpublished_apis_file }}
+    steps:
+      # 这个 Job 只需要 worker 上的脚本，不需要租户数据。
+      # 单仓库模式：checkout worker 自身（默认分支）拿脚本。
+      # 多租户模式：跳过这一步，scripts 来自下面的 _worker checkout。
+      - name: Checkout Worker (single-repo mode)
+        if: inputs.caller_repo == ''
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_DEPLOY_TOKEN }}
+
+      - name: Set Runtime Paths
+        run: |
+          if [[ -n "${{ inputs.caller_repo }}" ]]; then
+            echo "WORKER_REPO=${{ inputs.worker_repo }}" >> "$GITHUB_ENV"
+            echo "SCRIPT_ROOT=_worker" >> "$GITHUB_ENV"
+          else
+            echo "SCRIPT_ROOT=." >> "$GITHUB_ENV"
+          fi
+
+      - name: Checkout Worker Scripts
+        if: inputs.caller_repo != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.WORKER_REPO }}
+          ref: main
+          token: ${{ secrets.GH_DEPLOY_TOKEN }}
+          path: _worker
+
+      # 仅当本项目确实在环境里有任务时才执行。
+      # 若 task_names 为空（项目尚无任务，或本次回滚的版本不含任务），跳过——
+      # 否则 stop-tasks.sh 会进入"停止全部任务"模式，会误伤同环境下其他项目的资源。
+      - name: Stop Tasks
+        id: stop_tasks
+        if: needs.preparation.outputs.task_names != ''
+        run: bash $SCRIPT_ROOT/scripts/common/stop-tasks.sh
+        env:
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
+          TARGET_ENV: ${{ inputs.target_env }}
+          TASK_NAMES: ${{ needs.preparation.outputs.task_names }}
+
+      # 同上：若 api_names 为空就跳过，避免"下线全部 API"模式误伤。
+      - name: Unpublish APIs
+        id: unpublish_apis
+        if: needs.preparation.outputs.api_names != ''
+        run: bash $SCRIPT_ROOT/scripts/tapdata-rollback/unpublish-apis.sh
+        env:
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
+          TARGET_ENV: ${{ inputs.target_env }}
+          API_NAMES: ${{ needs.preparation.outputs.api_names }}
+
+      - name: Clean All Resources
+        run: bash $SCRIPT_ROOT/scripts/tapdata-rollback/clean-resources.sh
+        env:
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
+          TARGET_ENV: ${{ inputs.target_env }}
+          STOPPED_TASKS_FILE: ${{ steps.stop_tasks.outputs.stopped_tasks_file }}
+          API_IDS: ${{ steps.unpublish_apis.outputs.unpublished_api_ids }}
+
+  # ============================================================
+  # Job 3: Import and Activate Resources
+  # ============================================================
+  import-and-activate:
+    name: Import and Activate Resources
+    runs-on: [self-hosted, tapdata]
+    timeout-minutes: 30
+    environment: ${{ inputs.target_env }}
+    needs: [preparation, stop-and-clean]
+    env:
+      PROJECT: ${{ needs.preparation.outputs.project }}
+    steps:
+      # 数据仓库 checkout 到稳定 tag（含配置文件）。
+      # 多租户：checkout 租户仓库；单仓库：checkout worker 自身（同一仓库既是脚本又是配置）。
+      - name: Checkout Data Repository at Stable Tag
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.caller_repo != '' && inputs.caller_repo || github.repository }}
+          ref: ${{ needs.preparation.outputs.last_stable_tag }}
+          token: ${{ secrets.GH_DEPLOY_TOKEN }}
+
+      # F4: 单/多租户都把脚本从 worker 仓库的 main 单独 checkout 到 _worker/，
+      # 避免单仓库模式下使用"稳定 tag 时刻的旧脚本"——脚本一律来自当前主线，配置来自稳定 tag。
+      - name: Set Runtime Paths
+        run: |
+          if [[ -n "${{ inputs.caller_repo }}" ]]; then
+            echo "WORKER_REPO=${{ inputs.worker_repo }}" >> "$GITHUB_ENV"
+          else
+            echo "WORKER_REPO=${{ github.repository }}" >> "$GITHUB_ENV"
+          fi
+          echo "SCRIPT_ROOT=_worker" >> "$GITHUB_ENV"
+          echo "REPO_ROOT=${{ github.workspace }}" >> "$GITHUB_ENV"
+
+      - name: Checkout Worker Scripts
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.WORKER_REPO }}
+          ref: main
+          token: ${{ secrets.GH_DEPLOY_TOKEN }}
+          path: _worker
+
+      # F7: 注意 — 回滚不像 deploy 那样把 vault.json 通过 artifact 跨 Job 传递，
+      # 所以这里直接内联生成、就地打包导入，全程都在同一个 runner 进程中、不跨 Job 持久化。
+      # 因此回滚没有复用 deploy 的 vault-crypto.sh 加密流程。
+      # 后续若要把 import-and-activate 拆分成多个带审批门的 Job（如分别审批 connections/tasks），
+      # 必须重新评估并补上 vault 加密（参考 tapdata-deploy.yml 中的 Encrypt vault.json / Decrypt vault.json）。
+      - name: Generate vault.json with Connection Secrets
+        run: bash $SCRIPT_ROOT/scripts/tapdata-deploy/generate-vault.sh
+        env:
+          REPO_ROOT: ${{ env.REPO_ROOT }}
+          PROJECT: ${{ env.PROJECT }}
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+          ALL_VARS: ${{ toJSON(vars) }}
+
+      - name: Compress Connections
+        run: bash $SCRIPT_ROOT/scripts/common/compress-files.sh
+        env:
+          REPO_ROOT: ${{ env.REPO_ROOT }}
+          DEPLOY_DIR: ${{ env.ROLLBACK_DIR }}
+          ARCHIVE_NAME: connections-export.tar
+          PROJECT: ${{ env.PROJECT }}
+
+      - name: Import Connections
+        run: bash $SCRIPT_ROOT/scripts/common/import-resource.sh connections
+        env:
+          DEPLOY_DIR: ${{ env.ROLLBACK_DIR }}
+          ARCHIVE_NAME: connections-export.tar
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
+          TARGET_ENV: ${{ inputs.target_env }}
+
+      - name: Compress Tasks
+        run: bash $SCRIPT_ROOT/scripts/common/compress-files.sh
+        env:
+          REPO_ROOT: ${{ env.REPO_ROOT }}
+          DEPLOY_DIR: ${{ env.ROLLBACK_DIR }}
+          ARCHIVE_NAME: tasks-export.tar
+          PROJECT: ${{ env.PROJECT }}
+
+      - name: Import Tasks
+        run: bash $SCRIPT_ROOT/scripts/common/import-resource.sh tasks
+        env:
+          DEPLOY_DIR: ${{ env.ROLLBACK_DIR }}
+          ARCHIVE_NAME: tasks-export.tar
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
+          TARGET_ENV: ${{ inputs.target_env }}
+
+      - name: Compress APIs
+        run: bash $SCRIPT_ROOT/scripts/common/compress-files.sh
+        env:
+          REPO_ROOT: ${{ env.REPO_ROOT }}
+          DEPLOY_DIR: ${{ env.ROLLBACK_DIR }}
+          ARCHIVE_NAME: apis-export.tar
+          PROJECT: ${{ env.PROJECT }}
+
+      - name: Import APIs
+        run: bash $SCRIPT_ROOT/scripts/common/import-resource.sh apis
+        env:
+          DEPLOY_DIR: ${{ env.ROLLBACK_DIR }}
+          ARCHIVE_NAME: apis-export.tar
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
+          TARGET_ENV: ${{ inputs.target_env }}
+
+      # 重新激活：按本项目导出里定义的资源名，去线上重新查当前 id 再启动/发布。
+      # 同时做导入落地校验——导出里定义的任务/API 若在超时内没出现，直接报错（不再静默）。
+      # 不再依赖 stop-and-clean 写到 /tmp 的"删除前"文件（旧 id 已失效，且跨 runner 可能取不到）。
+      - name: Start Tasks and Publish APIs
+        run: bash $SCRIPT_ROOT/scripts/tapdata-rollback/start-and-publish.sh
+        env:
+          REPO_ROOT: ${{ env.REPO_ROOT }}
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
+          TARGET_ENV: ${{ inputs.target_env }}
+          PROJECT: ${{ env.PROJECT }}
+
+
+  # ============================================================
+  # Job 4: Generate Rollback Report
+  # ============================================================
+  generate-report:
+    name: Generate Rollback Report
+    runs-on: [self-hosted, tapdata]
+    timeout-minutes: 5
+    if: always()
+    needs: [preparation, stop-and-clean, import-and-activate]
+    env:
+      PROJECT: ${{ needs.preparation.outputs.project }}
+    steps:
+      - name: Generate Rollback Report
+        run: |
+          REPORT_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+          # F8: 区分 CANCELLED 与 FAILURE：
+          # 任一上游 Job 是 cancelled → 整体取消（操作者主动中断，不需要排查）
+          # 全部 success → 成功；其余情况（任一 failure/skipped 等）→ 失败
+          ALL_RESULTS="${PREPARATION_RESULT} ${STOP_AND_CLEAN_RESULT} ${IMPORT_AND_ACTIVATE_RESULT}"
+          if [[ "${ALL_RESULTS}" == *cancelled* ]]; then
+            OVERALL_RESULT="⏸ CANCELLED"
+          elif [[ "${PREPARATION_RESULT}" == "success" && "${STOP_AND_CLEAN_RESULT}" == "success" && "${IMPORT_AND_ACTIVATE_RESULT}" == "success" ]]; then
+            OVERALL_RESULT="✅ SUCCESS"
+          else
+            OVERALL_RESULT="❌ FAILURE"
+          fi
+
+          cat >> "${GITHUB_STEP_SUMMARY}" <<EOF
+          ## TapData Rollback Report
+
+          | Item | Value |
+          | --- | --- |
+          | Report Time | ${REPORT_TIME} |
+          | Operator | ${GITHUB_ACTOR} |
+          | Target Environment | ${TARGET_ENV} |
+          | Project | ${PROJECT} |
+          | Rollback Tag | ${LAST_STABLE_TAG} |
+          | Caller Repo | ${CALLER_REPO:-（单仓库模式）} |
+          | Overall Result | ${OVERALL_RESULT} |
+
+          ### Job Results
+
+          | Job | Result |
+          | --- | --- |
+          | Preparation | ${PREPARATION_RESULT} |
+          | Stop and Clean | ${STOP_AND_CLEAN_RESULT} |
+          | Import and Activate | ${IMPORT_AND_ACTIVATE_RESULT} |
+          EOF
+        env:
+          TARGET_ENV: ${{ inputs.target_env }}
+          PROJECT: ${{ env.PROJECT }}
+          LAST_STABLE_TAG: ${{ needs.preparation.outputs.last_stable_tag }}
+          CALLER_REPO: ${{ inputs.caller_repo }}
+          PREPARATION_RESULT: ${{ needs.preparation.result }}
+          STOP_AND_CLEAN_RESULT: ${{ needs.stop-and-clean.result }}
+          IMPORT_AND_ACTIVATE_RESULT: ${{ needs.import-and-activate.result }}
