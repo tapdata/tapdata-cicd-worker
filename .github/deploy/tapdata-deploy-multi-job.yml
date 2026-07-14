@@ -411,7 +411,7 @@ jobs:
           ARCHIVE_NAME: tasks-export.tar
           PROJECT: ${{ env.PROJECT }}
 
-      - name: Preview Migrate Tasks
+      - name: Preview Data Replication
         id: preview_migrate_tasks
         run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/preview-resource.sh migrate/tasks
         env:
@@ -421,7 +421,7 @@ jobs:
           TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
           TARGET_ENV: ${{ env.TARGET_ENV }}
 
-      - name: Preview Sync Tasks
+      - name: Preview Data Transformation
         id: preview_sync_tasks
         run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/preview-resource.sh sync/tasks
         env:
@@ -532,10 +532,10 @@ jobs:
           TARGET_ENV: ${{ env.TARGET_ENV }}
 
   # ============================================================
-  # Job 5: Deploy Migrate Tasks (requires approval)
+  # Job 5: Deploy Data Replication (requires approval)
   # ============================================================
   deploy-migrate-tasks:
-    name: Deploy Data Replication(FDM)
+    name: Deploy Data Replication
     runs-on: [self-hosted, tapdata]
     timeout-minutes: 15
     environment: deploy
@@ -608,7 +608,7 @@ jobs:
           ARCHIVE_NAME: tasks-export.tar
           PROJECT: ${{ env.PROJECT }}
 
-      - name: Import Migrate Tasks via TapData API
+      - name: Import Data Replication via TapData API
         id: import_migrate_tasks
         run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/import-resource.sh migrate/tasks
         env:
@@ -619,10 +619,10 @@ jobs:
           TARGET_ENV: ${{ env.TARGET_ENV }}
 
   # ============================================================
-  # Job 6: Deploy Sync Tasks (requires approval)
+  # Job 6: Deploy Data Transformation (requires approval)
   # ============================================================
   deploy-sync-tasks:
-    name: Deploy Data Transformation(MDM)
+    name: Deploy Data Transformation
     runs-on: [self-hosted, tapdata]
     timeout-minutes: 15
     environment: deploy
@@ -696,7 +696,7 @@ jobs:
           ARCHIVE_NAME: tasks-export.tar
           PROJECT: ${{ env.PROJECT }}
 
-      - name: Import Sync Tasks via TapData API
+      - name: Import Data Transformation via TapData API
         id: import_sync_tasks
         run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/import-resource.sh sync/tasks
         env:

@@ -41,11 +41,11 @@ case "${RESOURCE_TYPE}" in
     ;;
   migrate/tasks)
     API_PATH="api/groupInfo/preview/migrate/tasks"
-    DISPLAY_NAME="Migrate Tasks"
+    DISPLAY_NAME="Data Replication"
     ;;
   sync/tasks)
     API_PATH="api/groupInfo/preview/sync/tasks"
-    DISPLAY_NAME="Sync Tasks"
+    DISPLAY_NAME="Data Transformation"
     ;;
   apis)
     API_PATH="api/groupInfo/preview/apis"

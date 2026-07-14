@@ -404,7 +404,7 @@ jobs:
           ARCHIVE_NAME: tasks-export.tar
           PROJECT: ${{ env.PROJECT }}
 
-      - name: Preview Migrate Tasks
+      - name: Preview Data Replication
         id: preview_migrate_tasks
         run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/preview-resource.sh migrate/tasks
         env:
@@ -414,7 +414,7 @@ jobs:
           TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
           TARGET_ENV: ${{ env.TARGET_ENV }}
 
-      - name: Preview Sync Tasks
+      - name: Preview Data Transformation
         id: preview_sync_tasks
         run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/preview-resource.sh sync/tasks
         env:
@@ -466,10 +466,10 @@ jobs:
             add '{"key":"connections","label":"Connections","archive":"connections-export.tar","import_arg":"connections"}'
           fi
           if [[ "${{ steps.preview_migrate_tasks.outputs.has_changes }}" == "true" ]]; then
-            add '{"key":"migrate-tasks","label":"Data Replication(FDM)","archive":"tasks-export.tar","import_arg":"migrate/tasks"}'
+            add '{"key":"migrate-tasks","label":"Data Replication","archive":"tasks-export.tar","import_arg":"migrate/tasks"}'
           fi
           if [[ "${{ steps.preview_sync_tasks.outputs.has_changes }}" == "true" ]]; then
-            add '{"key":"sync-tasks","label":"Data Transformation(MDM)","archive":"tasks-export.tar","import_arg":"sync/tasks"}'
+            add '{"key":"sync-tasks","label":"Data Transformation","archive":"tasks-export.tar","import_arg":"sync/tasks"}'
           fi
           if [[ "${{ steps.preview_apis.outputs.has_changes }}" == "true" ]]; then
             add '{"key":"apis","label":"APIs","archive":"apis-export.tar","import_arg":"apis"}'
@@ -498,8 +498,8 @@ jobs:
             echo "| Resource | Status |"
             echo "| --- | --- |"
             echo "| Connections | $([[ '${{ steps.preview_connections.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy' || echo '— No changes, skipped') |"
-            echo "| Data Replication(FDM) | $([[ '${{ steps.preview_migrate_tasks.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy' || echo '— No changes, skipped') |"
-            echo "| Data Transformation(MDM) | $([[ '${{ steps.preview_sync_tasks.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy' || echo '— No changes, skipped') |"
+            echo "| Data Replication | $([[ '${{ steps.preview_migrate_tasks.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy' || echo '— No changes, skipped') |"
+            echo "| Data Transformation | $([[ '${{ steps.preview_sync_tasks.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy' || echo '— No changes, skipped') |"
             echo "| APIs | $([[ '${{ steps.preview_apis.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy' || echo '— No changes, skipped') |"
             echo ""
             echo "> Only resources marked \"Will deploy\" appear in the run graph; resources with no changes are no longer shown as a greyed-out \"Skipped\" node."
