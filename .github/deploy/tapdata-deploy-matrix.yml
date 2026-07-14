@@ -489,20 +489,20 @@ jobs:
           echo "Changed resources: ${COUNT}"
           echo "deploy_matrix=${MATRIX}"
 
-      # 把"本次将部署 / 跳过"的清单写到 run 的 Summary 页，进一步降低误解。
+      # Write the "will deploy / skip" list for this run to the run's Summary page to further reduce confusion.
       - name: Write Deploy Plan Summary
         run: |
           {
-            echo "## 部署计划（本次实际执行）"
+            echo "## Deploy Plan (what this run will actually execute)"
             echo ""
-            echo "| 资源 | 状态 |"
+            echo "| Resource | Status |"
             echo "| --- | --- |"
-            echo "| Connections | $([[ '${{ steps.preview_connections.outputs.has_changes }}' == 'true' ]] && echo '✅ 将部署' || echo '— 无变更，跳过') |"
-            echo "| Data Replication(FDM) | $([[ '${{ steps.preview_migrate_tasks.outputs.has_changes }}' == 'true' ]] && echo '✅ 将部署' || echo '— 无变更，跳过') |"
-            echo "| Data Transformation(MDM) | $([[ '${{ steps.preview_sync_tasks.outputs.has_changes }}' == 'true' ]] && echo '✅ 将部署' || echo '— 无变更，跳过') |"
-            echo "| APIs | $([[ '${{ steps.preview_apis.outputs.has_changes }}' == 'true' ]] && echo '✅ 将部署' || echo '— 无变更，跳过') |"
+            echo "| Connections | $([[ '${{ steps.preview_connections.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy' || echo '— No changes, skipped') |"
+            echo "| Data Replication(FDM) | $([[ '${{ steps.preview_migrate_tasks.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy' || echo '— No changes, skipped') |"
+            echo "| Data Transformation(MDM) | $([[ '${{ steps.preview_sync_tasks.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy' || echo '— No changes, skipped') |"
+            echo "| APIs | $([[ '${{ steps.preview_apis.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy' || echo '— No changes, skipped') |"
             echo ""
-            echo "> 运行图中只会出现\"将部署\"的资源；无变更的资源不再以灰色\"已跳过\"显示。"
+            echo "> Only resources marked \"Will deploy\" appear in the run graph; resources with no changes are no longer shown as a greyed-out \"Skipped\" node."
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ============================================================
