@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Preview resource changes (connections/migrate/tasks/sync/tasks/apis) via TapData API
+# Preview resource changes (connections/migrate/tasks/sync/tasks/apis/indexes) via TapData API
 # Usage: preview-resource.sh <resource_type>
-# resource_type: connections | migrate/tasks | sync/tasks | apis
+# resource_type: connections | migrate/tasks | sync/tasks | apis | indexes
 # Required env vars: DEPLOY_DIR, TAPDATA_TOKEN, TAPDATA_URL
 # Optional env vars: ARCHIVE_NAME
 set -euo pipefail
@@ -12,7 +12,7 @@ echo "=== Previewing ${RESOURCE_TYPE} via TapData API ==="
 
 # Validate inputs
 if [[ -z "${RESOURCE_TYPE}" ]]; then
-  echo "::error::Usage: preview-resource.sh <connections|migrate/tasks|sync/tasks|apis>"
+  echo "::error::Usage: preview-resource.sh <connections|migrate/tasks|sync/tasks|apis|indexes>"
   exit 1
 fi
 
@@ -51,8 +51,17 @@ case "${RESOURCE_TYPE}" in
     API_PATH="api/groupInfo/preview/apis"
     DISPLAY_NAME="APIs"
     ;;
+  # TAP-12057: serving indexes travel inside the API package but deploy as their own leg --
+  # creating an index is the only step here that is both expensive and risky on a collection
+  # that already holds data, so it has to be reviewable on its own. Same archive as apis (the
+  # export dir is tarred whole); the plan lists only indexes that would be created, each with
+  # its direction spelled out (a declared -1 created as 1 was a real defect).
+  indexes)
+    API_PATH="api/groupInfo/preview/indexes"
+    DISPLAY_NAME="Serving Indexes"
+    ;;
   *)
-    echo "::error::Unknown resource type: ${RESOURCE_TYPE}. Expected: connections|migrate/tasks|sync/tasks|apis"
+    echo "::error::Unknown resource type: ${RESOURCE_TYPE}. Expected: connections|migrate/tasks|sync/tasks|apis|indexes"
     exit 1
     ;;
 esac

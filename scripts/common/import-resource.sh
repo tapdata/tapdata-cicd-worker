@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Import resource (connections/tasks/apis) via TapData API
+# Import resource (connections/tasks/apis/indexes) via TapData API
 # Usage: import-resource.sh <resource_type>
-# resource_type: connections | tasks | migrate/tasks | sync/tasks | apis
+# resource_type: connections | tasks | migrate/tasks | sync/tasks | apis | indexes
 # Required env vars: DEPLOY_DIR, TAPDATA_TOKEN, TAPDATA_URL
 # Optional env vars: ARCHIVE_NAME
 set -euo pipefail
@@ -12,7 +12,7 @@ echo "=== Importing ${RESOURCE_TYPE} via TapData API ==="
 
 # Validate inputs
 if [[ -z "${RESOURCE_TYPE}" ]]; then
-  echo "::error::Usage: import-resource.sh <connections|tasks|migrate/tasks|sync/tasks|apis>"
+  echo "::error::Usage: import-resource.sh <connections|tasks|migrate/tasks|sync/tasks|apis|indexes>"
   exit 1
 fi
 
@@ -50,6 +50,14 @@ case "${RESOURCE_TYPE}" in
   apis)
     API_PATH="api/groupInfo/import/apis"
     ;;
+  # TAP-12057: create the serving indexes the API package declares. Runs after `apis`
+  # (declarations ride on the Module, which must land first) and is idempotent -- indexes
+  # already present are skipped, none are ever dropped. TM answers with a non-"ok" code
+  # when an index did not actually make it into the target database, which the generic
+  # check below turns into a failed step: a missing index must never deploy green.
+  indexes)
+    API_PATH="api/groupInfo/import/indexes"
+    ;;
   users)
     API_PATH="api/groupInfo/import/users"
     ;;
@@ -57,7 +65,7 @@ case "${RESOURCE_TYPE}" in
     API_PATH="api/groupInfo/import/groupInfo"
     ;;
   *)
-    echo "::error::Unknown resource type: ${RESOURCE_TYPE}. Expected: connections|tasks|migrate/tasks|sync/tasks|apis|users|groupInfo"
+    echo "::error::Unknown resource type: ${RESOURCE_TYPE}. Expected: connections|tasks|migrate/tasks|sync/tasks|apis|indexes|users|groupInfo"
     exit 1
     ;;
 esac
