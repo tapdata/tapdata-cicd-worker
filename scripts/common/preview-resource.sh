@@ -173,7 +173,8 @@ MARKDOWN_TMPFILE=$(mktemp)
           (.[0] | keys_unsorted) as $keys |
           "| \($keys | join(" | ")) |",
           "| \($keys | map("---") | join(" | ")) |",
-          (.[] | [to_entries[].value // "-"] | map("`\(.)`") | "| \(join(" | ")) |")
+          (.[] | [to_entries[] | if .value == null or .value == "" then "-" else .value end]
+           | map("`\(.)`") | "| \(join(" | ")) |")
         else empty end
       '
     else
@@ -199,7 +200,7 @@ MARKDOWN_TMPFILE=$(mktemp)
           echo "| Field | Value |"
           echo "| --- | --- |"
           while IFS= read -r key; do
-            val=$(echo "${item_json}" | jq -r --arg k "${key}" '.[$k] // "-" | tostring')
+            val=$(echo "${item_json}" | jq -r --arg k "${key}" 'if .[$k] == null or .[$k] == "" then "-" else .[$k] end | tostring')
             echo "| \`${key}\` | \`${val}\` |"
           done <<< "${scalar_keys}"
           echo ""
@@ -248,7 +249,7 @@ MARKDOWN_TMPFILE=$(mktemp)
         # Top-level changes table
         if ($changes | length) > 0 then
           "\n**Config Changes**\n\n| Field | From | To |\n| --- | --- | --- |\n" +
-          ($changes | map("| `\(.field)` | `\(.from // "-")` | `\(.to // "-")` |") | join("\n")) + "\n"
+          ($changes | map("| `\(.field)` | `\(if .from == null or .from == "" then "-" else .from end)` | `\(if .to == null or .to == "" then "-" else .to end)` |") | join("\n")) + "\n"
         else "" end +
 
         # Node additions
@@ -292,7 +293,8 @@ MARKDOWN_TMPFILE=$(mktemp)
         (.[0] | keys_unsorted) as $keys |
         "| \($keys | join(" | ")) |",
         "| \($keys | map("---") | join(" | ")) |",
-        (.[] | [to_entries[].value // "-"] | map("`\(.)`") | "| \(join(" | ")) |")
+        (.[] | [to_entries[] | if .value == null or .value == "" then "-" else .value end]
+           | map("`\(.)`") | "| \(join(" | ")) |")
       else empty end
     '
     echo ""
