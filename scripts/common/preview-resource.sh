@@ -133,6 +133,18 @@ UPDATE_LIST=$(echo "${BODY}" | jq -r '.data.update // []')
 DELETE_LIST=$(echo "${BODY}" | jq -r '.data.delete // []')
 COMMAND_LIST=$(echo "${BODY}" | jq -c '.data.commands // []' 2>/dev/null || echo "[]")
 
+# TAP-12057: orphan indexes -- in the target collection, declared by no API. Flattened across
+# targets so the section reads as one list. TM has already dropped `_id_` from this bucket
+# (every collection has it; it is not an orphan) while still counting it toward the 64 limit.
+ORPHAN_LIST=$(echo "${BODY}" | jq -c '[.data.report.targets[]? | . as $t | (.extra // [])[] | {
+  connection: ($t.connectionName // "-"),
+  table: ($t.tableName // "-"),
+  name: (.name // "-"),
+  keys: ((.fields // []) | map(.field + ":" + (if .asc == false then "-1" else "1" end)) | join(",")),
+  unique: (.unique // false)
+}]' 2>/dev/null || echo "[]")
+ORPHAN_COUNT=$(echo "${ORPHAN_LIST}" | jq 'length' 2>/dev/null || echo 0)
+
 ADD_COUNT=$(echo "${ADD_LIST}" | jq 'length')
 UPDATE_COUNT=$(echo "${UPDATE_LIST}" | jq 'length')
 DELETE_COUNT=$(echo "${DELETE_LIST}" | jq 'length')
@@ -344,6 +356,25 @@ MARKDOWN_TMPFILE=$(mktemp)
       echo '```'
       echo ""
     fi
+  fi
+
+  # TAP-12057: orphan indexes. These can never appear in the plan table -- they are not a change,
+  # so add/update/delete stay 0, the leg is skipped, and the summary otherwise says
+  # "No changes detected". But they are real cost: write amplification on every write, one slot
+  # out of MongoDB's 64-per-collection budget, and no one left who knows if dropping them is safe.
+  # Every rollback manufactures them (APIs revert, indexes are only-add and do not). The platform
+  # will not drop them -- that is ADR-0005/0008, not an oversight -- so the least it owes the
+  # operator is to say they are there. Direction is spelled out: an orphan LAST_CHANGE:-1 and a
+  # declared LAST_CHANGE:1 are different indexes.
+  if [[ "${ORPHAN_COUNT}" -gt 0 ]]; then
+    echo "### 🗂️ Orphan indexes (${ORPHAN_COUNT})"
+    echo ""
+    echo "> In the target collection, declared by no API. The platform never drops them — review and clean up by hand."
+    echo ""
+    echo "| connection | table | name | keys | unique |"
+    echo "| --- | --- | --- | --- | --- |"
+    echo "${ORPHAN_LIST}" | jq -r '.[] | "| `\(.connection)` | `\(.table)` | `\(.name)` | `\(.keys)` | `\(.unique)` |"'
+    echo ""
   fi
 } > "${MARKDOWN_TMPFILE}"
 

@@ -126,5 +126,56 @@ else
 fi
 teardown
 
+# Test 6: orphan indexes -- present in the target collection, declared by no API. The platform
+# never drops them (only-add, ADR-0005/0008), so they are pure cost: write amplification on every
+# write, one slot out of MongoDB's 64-per-collection budget, and nobody left who knows whether
+# they are safe to drop. Every rollback manufactures them (APIs go back, indexes do not), and the
+# plan table cannot show them -- they are not a change, so add/update/delete stay 0 and the leg is
+# skipped entirely. Without this section an operator reads "Serving Indexes — No changes" and
+# concludes the target is clean.
+setup
+export STUB_BODY='{"code":"ok","data":{"add":[],"update":[],"delete":[],"report":{"targets":[
+ {"connectionName":"mdm","tableName":"MDM_CUSTOMER","create":[],"skip":[],
+  "extra":[{"name":"POLICY.POLICY_STATUS_1","fields":[{"field":"POLICY.POLICY_STATUS","asc":true}],"unique":false}]}
+]}}}'
+bash "${SUT}" indexes >/dev/null 2>&1
+if grep -qi 'orphan' "${GITHUB_STEP_SUMMARY}" && grep -q 'POLICY.POLICY_STATUS_1' "${GITHUB_STEP_SUMMARY}"; then
+  pass "孤儿索引单独成段列出（计划表为空时也要出现）"
+else
+  fail "摘要里没有孤儿索引段落"
+  cat "${GITHUB_STEP_SUMMARY}" | sed 's/^/       /'
+fi
+teardown
+
+# Test 7: direction must be spelled out here too -- an orphan `LAST_CHANGE:-1` and a declared
+# `LAST_CHANGE:1` are different indexes, and telling them apart is the whole point of the keys column.
+setup
+export STUB_BODY='{"code":"ok","data":{"add":[],"update":[],"delete":[],"report":{"targets":[
+ {"connectionName":"mdm","tableName":"MDM_CUSTOMER","create":[],"skip":[],
+  "extra":[{"name":"stale_desc","fields":[{"field":"LAST_CHANGE","asc":false}],"unique":false}]}
+]}}}'
+bash "${SUT}" indexes >/dev/null 2>&1
+ROW=$(grep -m1 'stale_desc' "${GITHUB_STEP_SUMMARY}")
+if [[ "${ROW}" == *"LAST_CHANGE:-1"* ]]; then
+  pass "孤儿索引也带方向（${ROW}）"
+else
+  fail "孤儿索引没写明方向，无法与同字段升序索引区分：${ROW}"
+fi
+teardown
+
+# Test 8: no orphans -> no empty section. The clean case is the common case; a permanently
+# present "Orphan indexes (0)" heading trains people to ignore the section.
+setup
+export STUB_BODY='{"code":"ok","data":{"add":[],"update":[],"delete":[],"report":{"targets":[
+ {"connectionName":"mdm","tableName":"MDM_CUSTOMER","create":[],"skip":[],"extra":[]}
+]}}}'
+bash "${SUT}" indexes >/dev/null 2>&1
+if grep -qi 'orphan' "${GITHUB_STEP_SUMMARY}"; then
+  fail "没有孤儿索引却渲染出了空段落"
+else
+  pass "无孤儿索引时不渲染空段落"
+fi
+teardown
+
 echo
 if [[ "${FAILS}" -eq 0 ]]; then echo "All tests passed."; else echo "${FAILS} test(s) failed."; exit 1; fi
