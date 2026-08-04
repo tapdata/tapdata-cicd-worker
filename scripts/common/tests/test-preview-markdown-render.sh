@@ -96,5 +96,35 @@ else
 fi
 teardown
 
+# Test 4: manual commands (TM only emits them for MongoDB) render as a copyable code block
+# below the table. They are deliberately NOT a table column -- a createIndex statement is far
+# too long for a cell and would wreck the plan table.
+setup
+export STUB_BODY='{"code":"ok","data":{"add":[
+ {"connection":"mdm","table":"MDM_CUSTOMER","name":"LAST_CHANGE_-1","keys":"LAST_CHANGE:-1","unique":false,"declaredBy":"customer_by_country"}
+],"update":[],"delete":[],"commands":[
+ "db.MDM_CUSTOMER.createIndex({ \"LAST_CHANGE\": -1 }, { name: \"LAST_CHANGE_-1\", background: true })"
+]}}'
+bash "${SUT}" indexes >/dev/null 2>&1
+if grep -q 'createIndex' "${GITHUB_STEP_SUMMARY}" && grep -q '```' "${GITHUB_STEP_SUMMARY}"; then
+  pass "手工执行语句渲染成代码块"
+else
+  fail "摘要里没有手工执行语句的代码块"
+fi
+teardown
+
+# Test 5: no commands in the response (non-MongoDB, or none applicable) -> no empty block.
+setup
+export STUB_BODY='{"code":"ok","data":{"add":[
+ {"connection":"pg","table":"CUSTOMER","name":"CITY_1","keys":"CITY:1","unique":false,"declaredBy":"api"}
+],"update":[],"delete":[]}}'
+bash "${SUT}" indexes >/dev/null 2>&1
+if grep -q 'createIndex' "${GITHUB_STEP_SUMMARY}"; then
+  fail "响应里没有 commands，却渲染出了语句块"
+else
+  pass "无手工语句时不渲染空块（非 MongoDB 数据源）"
+fi
+teardown
+
 echo
 if [[ "${FAILS}" -eq 0 ]]; then echo "All tests passed."; else echo "${FAILS} test(s) failed."; exit 1; fi

@@ -131,6 +131,7 @@ fi
 ADD_LIST=$(echo "${BODY}" | jq -r '.data.add // []')
 UPDATE_LIST=$(echo "${BODY}" | jq -r '.data.update // []')
 DELETE_LIST=$(echo "${BODY}" | jq -r '.data.delete // []')
+COMMAND_LIST=$(echo "${BODY}" | jq -c '.data.commands // []' 2>/dev/null || echo "[]")
 
 ADD_COUNT=$(echo "${ADD_LIST}" | jq 'length')
 UPDATE_COUNT=$(echo "${UPDATE_LIST}" | jq 'length')
@@ -298,6 +299,22 @@ MARKDOWN_TMPFILE=$(mktemp)
       else empty end
     '
     echo ""
+  fi
+
+  # TAP-12057: manual creation commands. TM emits them only for MongoDB connections --
+  # every other data source has its own index DDL, and a generated statement that might
+  # not run (or worse, run wrongly) is worse than none. Rendered as a copyable code block
+  # BELOW the table, never as a column: a createIndex statement is far too long for a cell.
+  if [[ -n "${COMMAND_LIST}" && "${COMMAND_LIST}" != "[]" ]]; then
+    COMMAND_COUNT=$(echo "${COMMAND_LIST}" | jq 'length')
+    if [[ "${COMMAND_COUNT}" -gt 0 ]]; then
+      echo "### 🖥️ Manual commands (${COMMAND_COUNT})"
+      echo ""
+      echo '```javascript'
+      echo "${COMMAND_LIST}" | jq -r '.[]'
+      echo '```'
+      echo ""
+    fi
   fi
 } > "${MARKDOWN_TMPFILE}"
 
