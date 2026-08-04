@@ -520,7 +520,11 @@ jobs:
             echo "| Connections | $([[ '${{ steps.preview_connections.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy' || echo '— No changes, skipped') |"
             echo "| Data Replication | $([[ '${{ steps.preview_migrate_tasks.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy' || echo '— No changes, skipped') |"
             echo "| Data Transformation | $([[ '${{ steps.preview_sync_tasks.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy' || echo '— No changes, skipped') |"
-            echo "| APIs | $([[ '${{ steps.preview_apis.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy' || echo '— No changes, skipped') |"
+            # TAP-12057: a serving-index declaration lives inside the Module document, so ticking an
+            # index checkbox shows up here as an API change and must still be imported. Without the
+            # note the approver reads "APIs — Will deploy" as "the API itself changed". The note is
+            # computed in preview-resource.sh (all-vs-partial split lives there, with tests).
+            echo "| APIs | $([[ '${{ steps.preview_apis.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy ${{ steps.preview_apis.outputs.index_only_note }}' || echo '— No changes, skipped') |"
             echo "| Serving Indexes | $([[ '${{ steps.preview_indexes.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy' || echo '— No changes, skipped') |"
             echo ""
             echo "> Only resources marked \"Will deploy\" appear in the run graph; resources with no changes are no longer shown as a greyed-out \"Skipped\" node."
