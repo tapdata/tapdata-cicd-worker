@@ -50,7 +50,7 @@ on:
 jobs:
   deploy:
     # TODO: Replace {WORKER_REPO} with actual org/repo, e.g. your-org/tapdata-cicd-worker
-    uses: "tap-jason/jason_test_cicd/.github/workflows/tapdata-deploy.yml@main"
+    uses: "{WORKER_REPO}/.github/workflows/tapdata-deploy.yml@main"
     with:
       project: ${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }}
       target_env: ${{ inputs.target_env || '' }}
@@ -58,5 +58,5 @@ jobs:
       caller_sha: ${{ github.sha }}
       caller_event: ${{ github.event_name }}
       caller_ref: ${{ github.ref }}
-      worker_repo: "tap-jason/jason_test_cicd"
+      worker_repo: "{WORKER_REPO}"
     secrets: inherit

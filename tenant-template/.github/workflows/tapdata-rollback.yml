@@ -35,11 +35,11 @@ on:
 jobs:
   rollback:
     # TODO: Replace {WORKER_REPO} with actual org/repo, e.g. your-org/tapdata-cicd-worker
-    uses: "tap-jason/jason_test_cicd/.github/workflows/tapdata-rollback.yml@main"
+    uses: "{WORKER_REPO}/.github/workflows/tapdata-rollback.yml@main"
     with:
       project: ${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }}
       target_env: ${{ inputs.target_env }}
       last_stable_tag: ${{ inputs.last_stable_tag }}
       caller_repo: ${{ github.repository }}
-      worker_repo: "tap-jason/jason_test_cicd"
+      worker_repo: "{WORKER_REPO}"
     secrets: inherit
