@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Preview resource changes (connections/migrate/tasks/sync/tasks/apis) via TapData API
+# Preview resource changes (connections/migrate/tasks/sync/tasks/apis/indexes) via TapData API
 # Usage: preview-resource.sh <resource_type>
-# resource_type: connections | migrate/tasks | sync/tasks | apis
+# resource_type: connections | migrate/tasks | sync/tasks | apis | indexes
 # Required env vars: DEPLOY_DIR, TAPDATA_TOKEN, TAPDATA_URL
 # Optional env vars: ARCHIVE_NAME
 set -euo pipefail
@@ -12,7 +12,7 @@ echo "=== Previewing ${RESOURCE_TYPE} via TapData API ==="
 
 # Validate inputs
 if [[ -z "${RESOURCE_TYPE}" ]]; then
-  echo "::error::Usage: preview-resource.sh <connections|migrate/tasks|sync/tasks|apis>"
+  echo "::error::Usage: preview-resource.sh <connections|migrate/tasks|sync/tasks|apis|indexes>"
   exit 1
 fi
 
@@ -51,8 +51,17 @@ case "${RESOURCE_TYPE}" in
     API_PATH="api/groupInfo/preview/apis"
     DISPLAY_NAME="APIs"
     ;;
+  # TAP-12057: serving indexes travel inside the API package but deploy as their own leg --
+  # creating an index is the only step here that is both expensive and risky on a collection
+  # that already holds data, so it has to be reviewable on its own. Same archive as apis (the
+  # export dir is tarred whole); the plan lists only indexes that would be created, each with
+  # its direction spelled out (a declared -1 created as 1 was a real defect).
+  indexes)
+    API_PATH="api/groupInfo/preview/indexes"
+    DISPLAY_NAME="Serving Indexes"
+    ;;
   *)
-    echo "::error::Unknown resource type: ${RESOURCE_TYPE}. Expected: connections|migrate/tasks|sync/tasks|apis"
+    echo "::error::Unknown resource type: ${RESOURCE_TYPE}. Expected: connections|migrate/tasks|sync/tasks|apis|indexes"
     exit 1
     ;;
 esac
@@ -122,12 +131,53 @@ fi
 ADD_LIST=$(echo "${BODY}" | jq -r '.data.add // []')
 UPDATE_LIST=$(echo "${BODY}" | jq -r '.data.update // []')
 DELETE_LIST=$(echo "${BODY}" | jq -r '.data.delete // []')
+COMMAND_LIST=$(echo "${BODY}" | jq -c '.data.commands // []' 2>/dev/null || echo "[]")
+
+# TAP-12057: orphan indexes -- in the target collection, declared by no API. Flattened across
+# targets so the section reads as one list. TM has already dropped `_id_` from this bucket
+# (every collection has it; it is not an orphan) while still counting it toward the 64 limit.
+ORPHAN_LIST=$(echo "${BODY}" | jq -c '[.data.report.targets[]? | . as $t | (.extra // [])[] | {
+  connection: ($t.connectionName // "-"),
+  table: ($t.tableName // "-"),
+  name: (.name // "-"),
+  keys: ((.fields // []) | map(.field + ":" + (if .asc == false then "-1" else "1" end)) | join(",")),
+  unique: (.unique // false)
+}]' 2>/dev/null || echo "[]")
+ORPHAN_COUNT=$(echo "${ORPHAN_LIST}" | jq 'length' 2>/dev/null || echo 0)
 
 ADD_COUNT=$(echo "${ADD_LIST}" | jq 'length')
 UPDATE_COUNT=$(echo "${UPDATE_LIST}" | jq 'length')
 DELETE_COUNT=$(echo "${DELETE_LIST}" | jq 'length')
 
 echo "Preview results - Add: ${ADD_COUNT}, Update: ${UPDATE_COUNT}, Delete: ${DELETE_COUNT}"
+
+# TAP-12057: how many of the changed APIs changed NOTHING but their serving-index declarations.
+#
+# A declaration lives inside the Module document -- that is exactly what makes it travel through
+# CICD for free -- so ticking an index checkbox is a real change to the API document, and the APIs
+# leg must still import it or the declaration never reaches the target environment. The rollup,
+# though, said only "APIs -- Will deploy", which an approver reads as "the API itself changed":
+# different contract, different fields, worth scrutiny. TM already sends the field-level diff
+# (`servingIndexes[6].collected: true -> false`); this lifts that fact up into the rollup.
+#
+# The all/partial split is load-bearing: annotating whenever ANY change is a serving-index change
+# would let "declarations only" paper over a real API change riding along in the same run --
+# strictly worse than no annotation. An update with an empty `changes` list is never counted
+# either: we do not know what changed, and guessing would downplay it.
+INDEX_ONLY_COUNT=$(echo "${UPDATE_LIST}" | jq '[.[]
+  | select(type == "object")
+  | (.changes // []) as $c
+  | select(($c | length) > 0 and all($c[]; (.field // "") | startswith("servingIndexes")))
+] | length' 2>/dev/null || echo 0)
+
+INDEX_ONLY_NOTE=""
+if [[ "${INDEX_ONLY_COUNT}" -gt 0 ]]; then
+  if [[ "${ADD_COUNT}" -eq 0 && "${DELETE_COUNT}" -eq 0 && "${INDEX_ONLY_COUNT}" -eq "${UPDATE_COUNT}" ]]; then
+    INDEX_ONLY_NOTE="(serving-index declarations only)"
+  else
+    INDEX_ONLY_NOTE="(${INDEX_ONLY_COUNT} of ${UPDATE_COUNT} are serving-index declarations only)"
+  fi
+fi
 
 # 输出 has_changes 标志给 GitHub Actions
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
@@ -136,6 +186,7 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   else
     echo "has_changes=true" >> "${GITHUB_OUTPUT}"
   fi
+  echo "index_only_note=${INDEX_ONLY_NOTE}" >> "${GITHUB_OUTPUT}"
 fi
 
 # Build markdown content
@@ -164,7 +215,8 @@ MARKDOWN_TMPFILE=$(mktemp)
           (.[0] | keys_unsorted) as $keys |
           "| \($keys | join(" | ")) |",
           "| \($keys | map("---") | join(" | ")) |",
-          (.[] | [to_entries[].value // "-"] | map("`\(.)`") | "| \(join(" | ")) |")
+          (.[] | [to_entries[] | if .value == null or .value == "" then "-" else .value end]
+           | map("`\(.)`") | "| \(join(" | ")) |")
         else empty end
       '
     else
@@ -190,7 +242,7 @@ MARKDOWN_TMPFILE=$(mktemp)
           echo "| Field | Value |"
           echo "| --- | --- |"
           while IFS= read -r key; do
-            val=$(echo "${item_json}" | jq -r --arg k "${key}" '.[$k] // "-" | tostring')
+            val=$(echo "${item_json}" | jq -r --arg k "${key}" 'if .[$k] == null or .[$k] == "" then "-" else .[$k] end | tostring')
             echo "| \`${key}\` | \`${val}\` |"
           done <<< "${scalar_keys}"
           echo ""
@@ -239,7 +291,7 @@ MARKDOWN_TMPFILE=$(mktemp)
         # Top-level changes table
         if ($changes | length) > 0 then
           "\n**Config Changes**\n\n| Field | From | To |\n| --- | --- | --- |\n" +
-          ($changes | map("| `\(.field)` | `\(.from // "-")` | `\(.to // "-")` |") | join("\n")) + "\n"
+          ($changes | map("| `\(.field)` | `\(if .from == null or .from == "" then "-" else .from end)` | `\(if .to == null or .to == "" then "-" else .to end)` |") | join("\n")) + "\n"
         else "" end +
 
         # Node additions
@@ -283,9 +335,45 @@ MARKDOWN_TMPFILE=$(mktemp)
         (.[0] | keys_unsorted) as $keys |
         "| \($keys | join(" | ")) |",
         "| \($keys | map("---") | join(" | ")) |",
-        (.[] | [to_entries[].value // "-"] | map("`\(.)`") | "| \(join(" | ")) |")
+        (.[] | [to_entries[] | if .value == null or .value == "" then "-" else .value end]
+           | map("`\(.)`") | "| \(join(" | ")) |")
       else empty end
     '
+    echo ""
+  fi
+
+  # TAP-12057: manual creation commands. TM emits them only for MongoDB connections --
+  # every other data source has its own index DDL, and a generated statement that might
+  # not run (or worse, run wrongly) is worse than none. Rendered as a copyable code block
+  # BELOW the table, never as a column: a createIndex statement is far too long for a cell.
+  if [[ -n "${COMMAND_LIST}" && "${COMMAND_LIST}" != "[]" ]]; then
+    COMMAND_COUNT=$(echo "${COMMAND_LIST}" | jq 'length')
+    if [[ "${COMMAND_COUNT}" -gt 0 ]]; then
+      echo "### 🖥️ Manual commands (${COMMAND_COUNT})"
+      echo ""
+      echo '```javascript'
+      echo "${COMMAND_LIST}" | jq -r '.[]'
+      echo '```'
+      echo ""
+    fi
+  fi
+
+  # TAP-12057: orphan indexes. These can never appear in the plan table -- they are not a change,
+  # so add/update/delete stay 0, the leg is skipped, and the summary otherwise says
+  # "No changes detected". But they are real cost: write amplification on every write, one slot
+  # out of MongoDB's 64-per-collection budget, and no one left who knows if dropping them is safe.
+  # Every rollback manufactures them (APIs revert, indexes are only-add and do not). The platform
+  # will not drop them -- that is ADR-0005/0008, not an oversight -- so the least it owes the
+  # operator is to say they are there. Direction is spelled out: an orphan LAST_CHANGE:-1 and a
+  # declared LAST_CHANGE:1 are different indexes.
+  if [[ "${ORPHAN_COUNT}" -gt 0 ]]; then
+    echo "### 🗂️ Orphan indexes (${ORPHAN_COUNT})"
+    echo ""
+    echo "> In the target collection, declared by no API. The platform never drops them — review and clean up by hand."
+    echo ""
+    echo "| connection | table | name | keys | unique |"
+    echo "| --- | --- | --- | --- | --- |"
+    echo "${ORPHAN_LIST}" | jq -r '.[] | "| `\(.connection)` | `\(.table)` | `\(.name)` | `\(.keys)` | `\(.unique)` |"'
     echo ""
   fi
 } > "${MARKDOWN_TMPFILE}"

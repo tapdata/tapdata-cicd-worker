@@ -325,6 +325,7 @@ jobs:
       migrate_tasks_has_changes: ${{ steps.preview_migrate_tasks.outputs.has_changes }}
       sync_tasks_has_changes: ${{ steps.preview_sync_tasks.outputs.has_changes }}
       apis_has_changes: ${{ steps.preview_apis.outputs.has_changes }}
+      indexes_has_changes: ${{ steps.preview_indexes.outputs.has_changes }}
       # 核心：动态 matrix（只含有变更的资源）+ 是否存在任何变更
       deploy_matrix: ${{ steps.build_matrix.outputs.deploy_matrix }}
       has_any_changes: ${{ steps.build_matrix.outputs.has_any_changes }}
@@ -442,8 +443,21 @@ jobs:
           TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
           TARGET_ENV: ${{ env.TARGET_ENV }}
 
+      # TAP-12057: index declarations ride inside the API package, so this reuses
+      # apis-export.tar (compress tars the whole export dir; no extra archive needed).
+      # Dry-run only -- it reads the target database and lists what would be created.
+      - name: Preview Serving Indexes
+        id: preview_indexes
+        run: bash ${{ env.SCRIPT_ROOT }}/scripts/common/preview-resource.sh indexes
+        env:
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          ARCHIVE_NAME: apis-export.tar
+          TAPDATA_TOKEN: ${{ needs.preparation.outputs.tapdata_token }}
+          TAPDATA_URL: ${{ needs.preparation.outputs.tapdata_url }}
+          TARGET_ENV: ${{ env.TARGET_ENV }}
+
       # 核心新增步骤：根据各 preview 的 has_changes，按固定部署顺序
-      # （connections → FDM → MDM → APIs）拼出只含"有变更资源"的 matrix。
+      # （connections → FDM → MDM → APIs → Serving Indexes）拼出只含"有变更资源"的 matrix。
       # 输出：
       #   deploy_matrix   = {"include":[ {key,label,archive,import_arg}, ... ]}
       #   has_any_changes = true | false
@@ -474,6 +488,12 @@ jobs:
           if [[ "${{ steps.preview_apis.outputs.has_changes }}" == "true" ]]; then
             add '{"key":"apis","label":"APIs","archive":"apis-export.tar","import_arg":"apis"}'
           fi
+          # TAP-12057: 索引腿排在 apis 之后——声明随 Module 走，Module 必须先落地。
+          # 独立成腿而非塞进 apis：建索引是整条流水线里唯一昂贵、且在已有数据的集合上
+          # 带风险的操作，必须在部署计划表里显式可见、可单独审阅。
+          if [[ "${{ steps.preview_indexes.outputs.has_changes }}" == "true" ]]; then
+            add '{"key":"indexes","label":"Serving Indexes","archive":"apis-export.tar","import_arg":"indexes"}'
+          fi
 
           COUNT=$(jq 'length' <<<"$INCLUDE")
           MATRIX=$(jq -c -n --argjson inc "$INCLUDE" '{include: $inc}')
@@ -500,7 +520,12 @@ jobs:
             echo "| Connections | $([[ '${{ steps.preview_connections.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy' || echo '— No changes, skipped') |"
             echo "| Data Replication | $([[ '${{ steps.preview_migrate_tasks.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy' || echo '— No changes, skipped') |"
             echo "| Data Transformation | $([[ '${{ steps.preview_sync_tasks.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy' || echo '— No changes, skipped') |"
-            echo "| APIs | $([[ '${{ steps.preview_apis.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy' || echo '— No changes, skipped') |"
+            # TAP-12057: a serving-index declaration lives inside the Module document, so ticking an
+            # index checkbox shows up here as an API change and must still be imported. Without the
+            # note the approver reads "APIs — Will deploy" as "the API itself changed". The note is
+            # computed in preview-resource.sh (all-vs-partial split lives there, with tests).
+            echo "| APIs | $([[ '${{ steps.preview_apis.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy ${{ steps.preview_apis.outputs.index_only_note }}' || echo '— No changes, skipped') |"
+            echo "| Serving Indexes | $([[ '${{ steps.preview_indexes.outputs.has_changes }}' == 'true' ]] && echo '✅ Will deploy' || echo '— No changes, skipped') |"
             echo ""
             echo "> Only resources marked \"Will deploy\" appear in the run graph; resources with no changes are no longer shown as a greyed-out \"Skipped\" node."
           } >> "$GITHUB_STEP_SUMMARY"

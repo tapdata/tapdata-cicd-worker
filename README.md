@@ -1,6 +1,6 @@
 # tapdata-cicd-worker
 
-A reusable GitHub Actions worker for deploying [TapData](https://tapdata.io) configurations (connections, migrate tasks, sync tasks, APIs) across multiple environments (dev / sit / lpt / aat / prod) with built-in human approval gates and tag-based rollback.
+A reusable GitHub Actions worker for deploying [TapData](https://tapdata.io) configurations (connections, migrate tasks, sync tasks, APIs, serving indexes) across multiple environments (dev / sit / lpt / aat / prod) with built-in human approval gates and tag-based rollback.
 
 This repository is a **template**. Use it as the starting point for a customer-specific or team-specific TapData CI/CD setup.
 
