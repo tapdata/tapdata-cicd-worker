@@ -297,6 +297,70 @@ if [[ ${RC} -ne 0 ]] && has "${ERR_DSN_PASSWORD}" && lacks "realpw"; then
 else fail "T7-6e error names the reason without echoing the DSN" "rc=${RC}"; fi
 teardown
 
+# --- double-prefixed DSN carrying a password --------------------------------
+# T7-2 uses the mongodb form and T7-6e the bare form; neither covers "jdbc:" AND
+# a scheme together. A password check that forgets to strip prefixes before
+# looking for the userinfo sees authority "jdbc:" -- no "@" -- and reports the
+# DSN as clean, which is the one failure mode where the check silently stops
+# protecting anything.
+setup
+mkconn "orders_pg"
+export ALL_VARS='{"ORDERS_PG_DSN":"jdbc:mysql://user:realpw@localhost:3306/test"}'
+run_sut
+if [[ ${RC} -ne 0 ]] && has "${ERR_DSN_PASSWORD}" && lacks "realpw"; then
+  pass "double-prefixed DSN with a password is still rejected"
+else fail "double-prefixed DSN with a password is still rejected" "rc=${RC}"; fi
+teardown
+
+# --- L6 / L7: MongoDB shapes that must not trip the "no database" check ------
+# Not in the plan's worker table (they are listed TM-side), but the worker runs
+# its checks on them too, and a false "no database" warning here would fire on
+# every replica-set connection HA has -- i.e. on the most common shape, every
+# deploy. Seed lists and mongodb+srv also break naive parsing in different ways.
+setup
+mkconn "orders_mongo"
+export ALL_VARS='{"ORDERS_MONGO_DSN":"mongodb://tapuser:@h1:27017,h2:27017/orders?replicaSet=rs0"}'
+export ALL_SECRETS='{"ORDERS_MONGO_PASSWORD":"pw"}'
+run_sut
+if [[ ${RC} -eq 0 ]] \
+   && [[ "$(vault_val ORDERS_MONGO_DSN)" == "mongodb://tapuser:@h1:27017,h2:27017/orders?replicaSet=rs0" ]] \
+   && lacks "${WARN_NO_DATABASE}"; then
+  pass "L6 replica-set seed list: verbatim, no false 'no database' warning"
+else fail "L6 replica-set seed list: verbatim, no false 'no database' warning" "rc=${RC}"; fi
+teardown
+
+setup
+mkconn "orders_mongo"
+export ALL_VARS='{"ORDERS_MONGO_DSN":"mongodb+srv://tapuser:@cluster.example.net/orders"}'
+export ALL_SECRETS='{"ORDERS_MONGO_PASSWORD":"pw"}'
+run_sut
+if [[ ${RC} -eq 0 ]] \
+   && [[ "$(vault_val ORDERS_MONGO_DSN)" == "mongodb+srv://tapuser:@cluster.example.net/orders" ]] \
+   && lacks "${WARN_NO_DATABASE}"; then
+  pass "L7 mongodb+srv (no port, single host): verbatim, no false warning"
+else fail "L7 mongodb+srv (no port, single host): verbatim, no false warning" "rc=${RC}"; fi
+teardown
+
+# --- mixed formats in one repo ----------------------------------------------
+# The migration is per-connection, so "some connections on format 3, the rest
+# on the old ones" is the normal state for as long as it takes -- not an edge
+# case. Also the only test here with more than one connection, so it is what
+# catches per-iteration state leaking between connections.
+setup
+mkconn "orders_mongo"
+mkconn "orders_pg"
+export ALL_VARS='{"ORDERS_MONGO_DSN":"mongodb://tapuser:@h:27017/orders","ORDERS_PG_URL":"pg.example.com:5432","ORDERS_PG_USER":"pguser"}'
+export ALL_SECRETS='{"ORDERS_MONGO_PASSWORD":"mpw","ORDERS_PG_PASSWORD":"ppw"}'
+run_sut
+if [[ ${RC} -eq 0 ]] \
+   && [[ "$(vault_keys)" == "ORDERS_MONGO_DSN,ORDERS_MONGO_PASSWORD,ORDERS_PG_PASSWORD,ORDERS_PG_URL,ORDERS_PG_USER" ]] \
+   && [[ "$(vault_val ORDERS_PG_URL)" == "pg.example.com:5432" ]] \
+   && [[ "$(vault_val ORDERS_MONGO_PASSWORD)" == "mpw" ]] \
+   && [[ "$(vault_val ORDERS_PG_PASSWORD)" == "ppw" ]]; then
+  pass "mixed: format 3 and format 2 connections coexist in one vault.json"
+else fail "mixed: format 3 and format 2 connections coexist in one vault.json" "rc=${RC} keys=$(vault_keys)"; fi
+teardown
+
 echo
 if [[ ${REG_FAILS} -ne 0 ]]; then
   echo "REGRESSION BROKEN: ${REG_FAILS} test(s) pinning EXISTING behaviour failed."
