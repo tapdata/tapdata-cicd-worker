@@ -20,14 +20,35 @@ You can pick one mode and stick with it, or use both — the workflows are desig
 3. **Configure GitHub Environments**: create `dev`, `sit`, `lpt`, `aat`, `prod` (or whatever subset you need). Add required reviewers on the higher environments to enable the approval gate.
 4. **Configure secrets and variables** at org or repo level. Minimum required:
    - Secret `GH_DEPLOY_TOKEN` — fine-grained PAT with `Contents: Read` on this repo (and on tenant repos in multi-tenant mode).
-   - Secret `{ENV}_TAPDATA_ACCESSCODE` — TapData access code per environment, e.g. `DEV_TAPDATA_ACCESSCODE`.
-   - Variable `TAPDATA_URL` — TapData server URL per environment.
+   - Secret `{ENV}_TAPDATA_ACCESS_CODE` — TapData access code per environment, e.g. `DEV_TAPDATA_ACCESS_CODE`. Falls back to the un-prefixed `TAPDATA_ACCESS_CODE`.
+   - Variable `{ENV}_TAPDATA_URL` — TapData server URL per environment, e.g. `DEV_TAPDATA_URL`. Falls back to the un-prefixed `TAPDATA_URL`.
    - (Optional) Secret `VAULT_ENCRYPTION_KEY` — enables AES-256 encryption of the `vault.json` artifact.
-   - Connection-level secrets (`{CONNECTION_NAME}_URI` / `{CONNECTION_NAME}_user` / `DEFAULT_*`) — see `scripts/tapdata-deploy/generate-vault.sh` for the resolution order.
+   - Connection credentials — one of three formats per connection, see [Connection credential formats](#connection-credential-formats) below. Unlike the platform keys above, connection keys take **no** `{ENV}_` prefix.
 5. **Replace `conf/Task_Run_Order.json`** with your own MDM task DAG (`nodes` = task names, `edges` = upstream→downstream dependencies). The shipped file is an empty skeleton.
 6. **(Multi-tenant only)** In each tenant repo, copy `tenant-template/.github/workflows/tapdata-deploy.yml` and `tapdata-rollback.yml` into `.github/workflows/`. Replace `{WORKER_REPO}` with `your-org/your-worker-repo` (e.g. `your-org/tapdata-cicd-worker`).
 
 For full step-by-step instructions, see the documents under `docs/` (Chinese, with substitution placeholders).
+
+## Connection credential formats
+
+Each connection's credentials can be written in one of three formats. All three may coexist in one repo; `scripts/tapdata-deploy/generate-vault.sh` looks them up in the order below and **stops at the first match**.
+
+| # | Format | Keys and where they live | Fields covered | Lookup scope | Plaintext surface | Rollback semantics | When to pick it |
+|---|--------|--------------------------|----------------|--------------|-------------------|--------------------|-----------------|
+| 1 | **URI** | `{CONNECTION}_URI` → **Secret** | Whole connection string, password included. **No database name** — that travels with the export bundle | **Exact connection name only** | **Smallest** — masked in logs | Rolling back the artifact rolls the database name back too | Existing connections that don't need a per-environment database name. Not recommended for new setups |
+| 2 | **URL + USER + PASSWORD** | `{CONNECTION}_URL`, `{CONNECTION}_USER` → **Variable**; `{CONNECTION}_PASSWORD` → **Secret** | host, port, user, password. **No database name** | Exact → truncated prefix (`A_B_C_D` → `A_B`) → `DEFAULT_*` | Medium — host / port / user in plaintext | Same as above | Several connections share an address or credential and you want `DEFAULT_*` / prefix fallback |
+| 3 | **DSN + PASSWORD** | `{CONNECTION}_DSN` → **Variable**, password position left **empty**; `{CONNECTION}_PASSWORD` → **Secret** (optional) | host, port, user, **database name**; MongoDB also keeps `replicaSet` / `authSource` | `_DSN` **exact name only**; `_PASSWORD` exact → prefix → `DEFAULT_PASSWORD` | **Largest** — address, database name, user and JDBC params readable by every collaborator, and in Actions logs | ⚠ **Does not roll back the database name** — the script reads the *current* variable value | **The only format with a per-environment database name.** Also when the address surface should be reviewable and diffable |
+
+```
+Variables:  ORDERS_MONGO_DSN = mongodb://tapuser:@mongo-sit.internal:27017/orders_sit?replicaSet=rs0
+Secrets:    ORDERS_MONGO_PASSWORD = s3cr3t
+```
+
+- Environment isolation comes from **GitHub Environments** — configure the same key name under each Environment. Connection keys never carry a `DEV_` / `SIT_` prefix.
+- A DSN carrying a **real password fails the deployment**; the error never echoes the DSN. If one was ever pasted in, the only remedy is to **rotate that password** — Variables are not masked and deleting one reclaims nothing.
+- Before switching a connection to format 3, upgrade that environment's TapData first: an older TM **aborts the whole import** when it meets a `_DSN`-only connection.
+
+Full guidance: [`docs/setup-checklist.md`](docs/setup-checklist.md) (checklist), [`docs/tapdata-cicd-usage.md`](docs/tapdata-cicd-usage.md) §5.4 (中文, day-to-day), [`docs/cicd-delivery-guide.md`](docs/cicd-delivery-guide.md) §6.3 (中文, delivery).
 
 ## Documentation
 
