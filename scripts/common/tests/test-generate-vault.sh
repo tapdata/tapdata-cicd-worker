@@ -361,6 +361,78 @@ if [[ ${RC} -eq 0 ]] \
 else fail "mixed: format 3 and format 2 connections coexist in one vault.json" "rc=${RC} keys=$(vault_keys)"; fi
 teardown
 
+# --- flattening edge cases (T6) ---------------------------------------------
+# The lookup tables are built by flattening both blobs once. These pin the three
+# ways that flattening can silently corrupt them. All three are regressions, not
+# format-3 features: they describe how EVERY lookup behaves.
+GROUP="reg"
+
+# A secret value containing newlines. PEM keys held as secrets are the obvious
+# real case. A line-based reader would truncate the value AND read its remaining
+# lines as further KEY=VALUE pairs, inventing keys nobody configured.
+setup
+mkconn "orders_pg"
+export ALL_VARS='{"ORDERS_PG_URL":"pg.example.com:5432","ORDERS_PG_USER":"tapuser"}'
+export ALL_SECRETS="$(jq -n --arg p 'line1
+line2
+line3' '{ORDERS_PG_PASSWORD:$p, DECOY:"x"}')"
+run_sut
+if [[ ${RC} -eq 0 ]] \
+   && [[ "$(vault_keys)" == "ORDERS_PG_PASSWORD,ORDERS_PG_URL,ORDERS_PG_USER" ]] \
+   && [[ "$(vault_val ORDERS_PG_PASSWORD)" == 'line1
+line2
+line3' ]]; then
+  pass "multi-line secret value survives flattening intact"
+else fail "multi-line secret value survives flattening intact" "rc=${RC} keys=$(vault_keys)"; fi
+teardown
+
+# A value containing "=". Keys are split on the FIRST "=", so the value keeps
+# every later one; splitting on the last would silently truncate it.
+setup
+mkconn "orders_pg"
+export ALL_VARS='{"ORDERS_PG_URL":"pg.example.com:5432","ORDERS_PG_USER":"tapuser"}'
+export ALL_SECRETS='{"ORDERS_PG_PASSWORD":"a=b=c"}'
+run_sut
+if [[ ${RC} -eq 0 ]] && [[ "$(vault_val ORDERS_PG_PASSWORD)" == "a=b=c" ]]; then
+  pass "secret value containing '=' survives flattening"
+else fail "secret value containing '=' survives flattening" "rc=${RC} got=$(vault_val ORDERS_PG_PASSWORD)"; fi
+teardown
+
+# One blob empty. A repo using only Secrets (or only Variables) is ordinary, and
+# an empty associative array is unbound under `set -u`: ${#MAP[@]} aborts the
+# whole script while ${MAP[$k]-} is fine. Caught during T6 by the format-1 test,
+# which only covers it by accident -- this one says so in its name.
+setup
+mkconn "orders_mongo"
+export ALL_SECRETS='{"ORDERS_MONGO_URI":"mongodb://u:p@h:27017/orders"}'
+export ALL_VARS='{}'
+run_sut
+if [[ ${RC} -eq 0 ]] && [[ "$(vault_keys)" == "ORDERS_MONGO_URI" ]]; then
+  pass "empty ALL_VARS: lookup tables tolerate an empty blob"
+else fail "empty ALL_VARS: lookup tables tolerate an empty blob" "rc=${RC}"; fi
+teardown
+
+setup
+mkconn "orders_pg"
+export ALL_VARS='{"ORDERS_PG_DSN":"user@localhost:3306/test"}'
+export ALL_SECRETS='{}'
+run_sut
+if [[ ${RC} -eq 0 ]] && [[ "$(vault_keys)" == "ORDERS_PG_DSN" ]]; then
+  pass "empty ALL_SECRETS: lookup tables tolerate an empty blob"
+else fail "empty ALL_SECRETS: lookup tables tolerate an empty blob" "rc=${RC}"; fi
+teardown
+
+# Malformed JSON must fail with a statement of which blob is bad, not with a raw
+# jq error from whichever lookup happened to run first.
+setup
+mkconn "orders_pg"
+export ALL_SECRETS='{not json'
+run_sut
+if [[ ${RC} -ne 0 ]] && has "ALL_SECRETS is not valid JSON"; then
+  pass "malformed ALL_SECRETS names the offending blob"
+else fail "malformed ALL_SECRETS names the offending blob" "rc=${RC}"; fi
+teardown
+
 echo
 if [[ ${REG_FAILS} -ne 0 ]]; then
   echo "REGRESSION BROKEN: ${REG_FAILS} test(s) pinning EXISTING behaviour failed."

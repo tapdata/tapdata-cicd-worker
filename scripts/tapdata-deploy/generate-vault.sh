@@ -39,6 +39,26 @@ if [[ -z "${ALL_VARS:-}" ]]; then
   exit 1
 fi
 
+# Associative arrays (below) need bash 4+. macOS still ships bash 3.2 as
+# /bin/bash, so without this the failure would be a confusing syntax error
+# rather than a statement of what is missing. CI runners are bash 5.
+if (( BASH_VERSINFO[0] < 4 )); then
+  echo "::error::bash 4+ is required (associative arrays); this shell is ${BASH_VERSION}"
+  exit 1
+fi
+
+# Both blobs are parsed exactly once (below), so a malformed one must be caught
+# here. Previously the first lookup would fail with a raw jq error; a silently
+# empty map would instead make every connection report "no match".
+if ! printf '%s' "${ALL_SECRETS}" | jq -e . >/dev/null 2>&1; then
+  echo "::error::ALL_SECRETS is not valid JSON"
+  exit 1
+fi
+if ! printf '%s' "${ALL_VARS}" | jq -e . >/dev/null 2>&1; then
+  echo "::error::ALL_VARS is not valid JSON"
+  exit 1
+fi
+
 # Locate connection files directory
 EXPORT_DIR="${REPO_ROOT}/${PROJECT}_tapdata_export"
 CONNECTIONS_DIR="${EXPORT_DIR}/Connection"
@@ -92,30 +112,58 @@ get_prefix() {
   fi
 }
 
+# --- Flatten both blobs once, then look everything up in memory -------------
+# Every lookup used to re-parse the entire JSON. With five priorities that is up
+# to ~11 full parses per connection, once per connection in the repo. Now it is
+# two parses for the whole run.
+#
+# NUL-delimited, not line-delimited: secret VALUES may legitimately contain
+# newlines -- a PEM key held in a secret is the obvious case -- and a line-based
+# reader would both truncate such a value and read its remaining lines as
+# further KEY=VALUE entries, inventing keys that were never configured. Keys are
+# split on the FIRST "=", so values containing "=" survive intact.
+declare -A SECRETS_MAP
+declare -A VARS_MAP
+SECRETS_COUNT=0
+VARS_COUNT=0
+FLATTEN_JQ='to_entries[] | "\(.key)=\(.value|tostring)" + "\u0000"'
+
+while IFS= read -r -d '' _entry; do
+  SECRETS_MAP["${_entry%%=*}"]="${_entry#*=}"
+  SECRETS_COUNT=$((SECRETS_COUNT + 1))
+done < <(printf '%s' "${ALL_SECRETS}" | jq -j "${FLATTEN_JQ}")
+
+while IFS= read -r -d '' _entry; do
+  VARS_MAP["${_entry%%=*}"]="${_entry#*=}"
+  VARS_COUNT=$((VARS_COUNT + 1))
+done < <(printf '%s' "${ALL_VARS}" | jq -j "${FLATTEN_JQ}")
+
+echo "Loaded ${SECRETS_COUNT} secret(s) and ${VARS_COUNT} variable(s)"
+
 # Try to find {key}_URI in Secrets
 try_lookup_uri() {
-  local lookup_key="$1"
-  echo "${ALL_SECRETS}" | jq -r --arg k "${lookup_key}_URI" '.[$k] // empty'
+  local k="${1}_URI"
+  printf '%s' "${SECRETS_MAP[$k]-}"
 }
 
 # Try to find {key}_URL in Variables, {key}_USER in Variables, and {key}_PASSWORD in Secrets
 try_lookup_url_user_password() {
   local lookup_key="$1"
-  FOUND_URL=$(echo "${ALL_VARS}" | jq -r --arg k "${lookup_key}_URL" '.[$k] // empty')
-  FOUND_USER=$(echo "${ALL_VARS}" | jq -r --arg k "${lookup_key}_USER" '.[$k] // empty')
-  FOUND_PASSWORD=$(echo "${ALL_SECRETS}" | jq -r --arg k "${lookup_key}_PASSWORD" '.[$k] // empty')
+  FOUND_URL="${VARS_MAP[${lookup_key}_URL]-}"
+  FOUND_USER="${VARS_MAP[${lookup_key}_USER]-}"
+  FOUND_PASSWORD="${SECRETS_MAP[${lookup_key}_PASSWORD]-}"
 }
 
 # Try to find {key}_DSN in Variables
 try_lookup_dsn() {
-  local lookup_key="$1"
-  echo "${ALL_VARS}" | jq -r --arg k "${lookup_key}_DSN" '.[$k] // empty'
+  local k="${1}_DSN"
+  printf '%s' "${VARS_MAP[$k]-}"
 }
 
 # Try to find {key}_PASSWORD in Secrets
 try_lookup_password() {
-  local lookup_key="$1"
-  echo "${ALL_SECRETS}" | jq -r --arg k "${lookup_key}_PASSWORD" '.[$k] // empty'
+  local k="${1}_PASSWORD"
+  printf '%s' "${SECRETS_MAP[$k]-}"
 }
 
 # --- DSN inspection -------------------------------------------------------
