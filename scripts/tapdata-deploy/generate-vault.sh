@@ -241,10 +241,20 @@ for conn_name in "${CONNECTION_NAMES[@]}"; do
     fi
     MATCH_TYPE="dsn"
 
-    # Missing pieces warn and keep the target's existing value (ADR-0036 D10);
-    # they are not errors and never write an empty value.
+    # Missing pieces warn rather than error, and never write an empty value
+    # (ADR-0036 D10).
+    #
+    # The database row of that table is the one whose mechanism differs, so the
+    # wording has to hold for both outcomes: database_name is NOT in
+    # SENSITIVE_API_KEYS, so it never travels the "masked field -> restore from
+    # existing" path the password/userinfo rows use. TM preserves it explicitly
+    # (ResourceHandler#restoreDatabaseNameWhenDsnOmitsIt) when the target
+    # already has that connection; on a first deploy there is nothing to keep
+    # and the package's name is used. The worker cannot tell those apart -- it
+    # does not know the target's state -- so it must not promise either one
+    # unconditionally.
     if ! dsn_has_database "${FOUND_DSN}"; then
-      echo "::warning::Connection '${conn_name}': ${conn_name}_DSN does not carry a database name; the target environment's existing database name will be kept."
+      echo "::warning::Connection '${conn_name}': ${conn_name}_DSN does not carry a database name; the target environment's existing database name will be kept if that connection already exists there, otherwise the name shipped in the package is used. Put the database name in the DSN to make it environment-specific."
     fi
 
     # The password half falls back, unlike the DSN half (ADR-0036 D4).

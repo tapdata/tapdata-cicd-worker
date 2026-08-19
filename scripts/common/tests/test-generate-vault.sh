@@ -143,6 +143,14 @@ teardown
 GROUP="dsn"
 ERR_DSN_PASSWORD="must not contain a password"
 WARN_NO_DATABASE="does not carry a database name"
+# The second half of that same sentence is the load-bearing one and it has been
+# wrong once already: it used to promise the target's existing database name
+# survives, which was false until TM actually implemented the preservation
+# (ResourceHandler#restoreDatabaseNameWhenDsnOmitsIt). The marker phrase above
+# stays true under either wording, so it caught nothing. This one pins the
+# promise itself, and the run must not claim the source environment's name wins.
+WARN_NO_DATABASE_KEPT="existing database name will be kept"
+WARN_NO_DATABASE_LIE="the source environment's"
 WARN_NO_PASSWORD="no password configured"
 
 L1="user@localhost:3306/test"
@@ -259,9 +267,10 @@ export ALL_SECRETS='{"ORDERS_PG_PASSWORD":"pw"}'
 run_sut
 if [[ ${RC} -eq 0 ]] \
    && [[ "$(vault_val ORDERS_PG_DSN)" == "${L10}" ]] \
-   && has "::warning::" && has "${WARN_NO_DATABASE}"; then
-  pass "T7-6c no database name: rc=0, _DSN still written, warning raised"
-else fail "T7-6c no database name: rc=0, _DSN still written, warning raised" "rc=${RC}"; fi
+   && has "::warning::" && has "${WARN_NO_DATABASE}" \
+   && has "${WARN_NO_DATABASE_KEPT}" && lacks "${WARN_NO_DATABASE_LIE}"; then
+  pass "T7-6c no database name: rc=0, _DSN still written, warning promises the target name is kept"
+else fail "T7-6c no database name: rc=0, _DSN still written, warning promises the target name is kept" "rc=${RC}"; fi
 teardown
 
 # --- T7-6d: the password half DOES fall back to DEFAULT_PASSWORD ------------
