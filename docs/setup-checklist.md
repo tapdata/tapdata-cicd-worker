@@ -178,24 +178,48 @@ jobs:
     secrets: inherit
 ```
 
-**Database credentials (repo-level):**
+**Database credentials (per environment):**
 
-Configure at tenant repo > **Settings** > **Secrets and variables** > **Actions**:
+Configure at tenant repo > **Settings** > **Secrets and variables** > **Actions**, under each Environment (`sit`, `lpt`, …).
 
-**MongoDB connections** (`FDM`, `MDM`) — use URI format:
+**Pick one of three formats per connection.** All three may coexist in one repo; lookup stops at the first match, in the order below.
+
+| # | Format | Keys and where they live | Fields covered | Lookup scope | Plaintext surface | Rollback semantics | When to pick it |
+|---|--------|--------------------------|----------------|--------------|-------------------|--------------------|-----------------|
+| 1 | **URI** | `{CONNECTION}_URI` → **Secret** | Whole connection string (password included). **No database name** — that travels with the export bundle | **Exact connection name only**: no prefix truncation, no `DEFAULT` fallback | **Smallest**: the whole string is a Secret, masked in Actions logs | Rolling back the artifact rolls the database name back too | Existing connections that don't need a per-environment database name — **leave them alone**. Not recommended for new setups |
+| 2 | **URL + USER + PASSWORD** | `{CONNECTION}_URL`, `{CONNECTION}_USER` → **Variable**; `{CONNECTION}_PASSWORD` → **Secret** | host, port, user, password. **No database name** | Exact name → truncated prefix (before the 2nd `_`, `A_B_C_D` → `A_B`) → `DEFAULT_*` | Medium: host / port / user are plaintext | Same as above | Several connections share one address or credential and you want `DEFAULT_*` / prefix fallback to save keys |
+| 3 | **DSN + PASSWORD** (new) | `{CONNECTION}_DSN` → **Variable** (password position left **empty**); `{CONNECTION}_PASSWORD` → **Secret** (**optional**) | host, port, user, **database name**; MongoDB also keeps `replicaSet` / `authSource` and other query params | `{CONNECTION}_DSN` **exact name only**; `{CONNECTION}_PASSWORD` exact → truncated prefix → `DEFAULT_PASSWORD` | **Largest**: address, database name, user and JDBC params are readable by every collaborator with repo read access, and land in Actions logs | ⚠ **Rollback does not roll back the database name** — the script reads the *current* variable value | **A per-environment database name is only possible here.** Also pick it when you want the address surface reviewable and diffable |
+
+**Key naming — no environment prefix on connection keys:**
+
+| Key kind | `{ENV}_` prefix | How it resolves |
+|---|---|---|
+| Platform (`TAPDATA_URL`, `TAPDATA_ACCESS_CODE`) | **Optional** | `{ENV}_TAPDATA_URL` first, falling back to `TAPDATA_URL` |
+| Connection (`_DSN` / `_URI` / `_URL` / `_USER` / `_PASSWORD`) | **Never** | Only `{CONNECTION}_<suffix>` is looked up. `DEV_FDM_URI` is **not found** — that connection reports missing config |
+
+Environment isolation comes from GitHub Environments: configure the **same** key name under each Environment with that environment's value.
+
+`CONNECTION` must match the connection name in TapData; the script upper-cases it and spaces become underscores. ⚠ Names that collide once upper-cased (`foo_db` / `FOO_DB`) share one set of keys — under format 3 that means **one shared database**. Names containing hyphens, dots, spaces or non-ASCII, or starting with `GITHUB_`, cannot be used with format 3 at all (GitHub variable naming rules).
+
+**Format 3 examples:**
 
 | Type | Name | Example |
 |---|---|---|
-| Secret | `FDM_URI` | `mongodb://user:pass@host:27017/db` |
-| Secret | `MDM_URI` | `mongodb://user:pass@host:27017/db` |
+| Variable | `MDM_DSN` | `mongodb://tapuser:@host:27017/mdm_sit?replicaSet=rs0` |
+| Variable | `HPI_SOURCE_DSN` | `readonly@10.0.1.10:5432/hpi_sit` |
+| Secret | `HPI_SOURCE_PASSWORD` | `s3cret` |
 
-**PostgreSQL connections** (all others) — use split format:
+- The password position must be **empty** — `user:@host/db` and `user@host/db` are both accepted. The password goes in the Secret.
+- The three JDBC spellings are equivalent: `user@h:5432/db`, `jdbc:postgresql://user@h:5432/db`, `postgresql://user@h:5432/db`. The prefix is **discarded and never used to infer the database type**.
+- MongoDB DSNs are kept whole (seed lists, `replicaSet`, `authSource`, `mongodb+srv://`). JDBC `?` params are **dropped this release** with a named warning; MongoDB query params are kept.
+- Missing `{CONNECTION}_PASSWORD`, database name, or user is **not** an error: the target's existing value is kept and a warning names exactly what was missing.
+- ⚠ A DSN carrying a **real password fails the deployment**, and the error never echoes the DSN. If one was ever pasted in, the only remedy is to **rotate that password** — Variables are not masked, and deleting the variable reclaims nothing.
 
-| Type | Name |
-|---|---|
-| Variable | `{NAME}_URL` |
-| Variable | `{NAME}_USER` |
-| Secret | `{NAME}_PASSWORD` |
+**Before switching a connection to format 3:**
+
+- [ ] Target environment's TapData is already upgraded — an older TM **aborts the whole import** when it meets a `_DSN`-only connection (not just that connection). Each environment upgrades separately.
+- [ ] New key added *before* the old one is removed (format 3 wins while both exist, so a deploy can verify it first).
+- [ ] `DEFAULT_PASSWORD` **kept**, if the repo uses it — `_DSN` is exact-name only, but `_PASSWORD` still falls back.
 
 - [ ] `sit` environment database credentials configured
 - [ ] `lpt` environment database credentials configured

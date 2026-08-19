@@ -363,28 +363,83 @@ git push origin main
 
 **跨组织 PAT 组合说明**：若使用 Fine-grained（两个 PAT），`GH_DEPLOY_TOKEN` 填 PAT-B（租户组织读写），同时额外配置 `GH_WORKER_TOKEN = PAT-A`（Worker 组织只读）；若使用 Classic PAT 则只需 `GH_DEPLOY_TOKEN` 一个。
 
-### 5.4 配置租户仓库级 Secrets（数据库凭据）
+### 5.4 配置租户仓库级数据库凭据
 
 进入租户仓库 → **Settings → Secrets and variables → Actions**。
 
-**MongoDB 连接（URI 格式）：**
+#### 5.4.1 三种格式的选型对照
+
+一条连接的凭据有三种写法，**任选其一**。三种可以在同一个仓库里共存，部署时按下表次序查找、**命中即停**（排在前面的赢）。
+
+| # | 格式 | 键名与存放位置 | 覆盖到的字段 | 查找作用域 | 明文面 | 回滚语义 | 什么时候选它 |
+|---|-----|--------------|------------|----------|-------|---------|------------|
+| 1 | **URI 型** | `{CONNECTION}_URI` → **Secret** | 整串连接串（含密码）。**不含库名**——库名随导出包走 | **仅精确连接名**：无前缀截断、无 `DEFAULT` 回落 | **最小**：整串都在 Secret 里，Actions 日志自动打码 | 回滚制品 ⇒ 库名一起回滚 | 已经在用、且不需要跨环境改库名 ⇒ **保持不动**。不建议新配 |
+| 2 | **URL + USER + PASSWORD 三件套** | `{CONNECTION}_URL`、`{CONNECTION}_USER` → **Variable**；`{CONNECTION}_PASSWORD` → **Secret** | host、port、用户名、密码。**不含库名** | 精确名 → 截断前缀（第 2 个 `_` 之前，`A_B_C_D` → `A_B`）→ `DEFAULT_*` | 中：host / port / 用户名明文可见 | 同上 | 多条连接共用同一套地址或凭据，想靠前缀 / `DEFAULT_*` 少配几组时 |
+| 3 | **DSN + PASSWORD**（本版新增） | `{CONNECTION}_DSN` → **Variable**（密码位**留空**）；`{CONNECTION}_PASSWORD` → **Secret**（**可选**） | host、port、用户名、**库名**、密码；MongoDB 还含 `replicaSet` / `authSource` 等 query 参数 | `{CONNECTION}_DSN` **仅精确连接名**；`{CONNECTION}_PASSWORD` 精确名 → 截断前缀 → `DEFAULT_PASSWORD` | **最大**：地址、库名、用户名、JDBC 参数对**所有有本仓读权限的人**可见，并会进 Actions 日志 | ⚠ **回滚不回滚库名**：脚本读的是**当前**变量值，回滚制品后库名仍是新的那个 | **要让库名逐环境不同 ⇒ 只能选它**；或希望地址面可评审、可 diff |
+
+> **只有格式 3 能覆盖库名。** 格式 1 / 2 的连接，库名继续从导出包里带过来、跨环境相同。
+>
+> **明文面为什么值得先看一眼**：Variable 是明文，仓库协作者可读、REST API 可取、Actions 日志可下载。把地址搬进 Variable 换来的是"可评审、可 diff、可逐环境不同"，代价是这些信息不再受保护——而 host / port / 库名**不是能轮换的凭据**，一旦外泄没有任何补救动作。密码始终只放 Secret。
+
+#### 5.4.2 键名不带环境前缀
+
+**连接级键名一律写成 `{CONNECTION}_后缀`，不加 `DEV_` / `SIT_` 之类的环境前缀**——环境隔离靠 GitHub Environments（在 `dev` / `sit` / `aat` / `prod` 各自的 Environment 下配同名键），脚本只查不带前缀的键名。
+
+| 键类 | 是否带 `{ENV}_` 前缀 | 说明 |
+|-----|-------------------|-----|
+| 平台级（`TAPDATA_URL`、`TAPDATA_ACCESS_CODE`） | **可带可不带** | 先查 `{ENV}_TAPDATA_URL`，查不到回落到 `TAPDATA_URL`。常配在组织级 |
+| 连接级（`_DSN` / `_URI` / `_URL` / `_USER` / `_PASSWORD`） | **一律不带** | 只查 `{CONNECTION}_后缀`。写成 `DEV_FDM_URI` 会**查不到**，部署时报该连接缺配置 |
+
+> `CONNECTION` 需与 TapData 平台上的连接名一致：**自动大写**，空格替换为下划线。
+>
+> ⚠ **两条命名约束**：① 大写化之后重名的连接（`foo_db` 与 `FOO_DB`）会映射到同一组键——格式 3 下这意味着两条连接指向**同一个库**；② GitHub 变量名不允许连字符、点、空格、中文，也不能以 `GITHUB_` 开头，这类连接名**无法**用格式 3 配置。
+
+#### 5.4.3 三种格式的配置样例
+
+**格式 1 — URI 型（MongoDB 常见）：**
 
 | 类型 | 名称 | 示例 |
 |-----|-----|------|
-| Secret | `{ENV}_FDM_URI` | `mongodb://user:pass@host:27017/fdm` |
-| Secret | `{ENV}_MDM_URI` | `mongodb://user:pass@host:27017/mdm` |
+| Secret | `FDM_URI` | `mongodb://user:pass@host:27017/fdm` |
+| Secret | `MDM_URI` | `mongodb://user:pass@host:27017/mdm` |
 
-对 `DEV` / `SIT` / `AAT` / `PROD` 分别配置一套。
-
-**PostgreSQL / MySQL 等分字段格式：**
+**格式 2 — 三件套（PostgreSQL / MySQL 等常见）：**
 
 | 类型 | 名称 | 示例 |
 |-----|-----|------|
-| Variable | `{ENV}_{CONNECTION}_URL` | `DEV_SOURCE_DB_A_URL` = `10.0.1.10:5432` |
-| Variable | `{ENV}_{CONNECTION}_USER` | `DEV_SOURCE_DB_A_USER` = `readonly` |
-| Secret | `{ENV}_{CONNECTION}_PASSWORD` | `DEV_SOURCE_DB_A_PASSWORD` = `xxx` |
+| Variable | `{CONNECTION}_URL` | `SOURCE_DB_A_URL` = `10.0.1.10:5432` |
+| Variable | `{CONNECTION}_USER` | `SOURCE_DB_A_USER` = `readonly` |
+| Secret | `{CONNECTION}_PASSWORD` | `SOURCE_DB_A_PASSWORD` = `xxx` |
 
-> `CONNECTION` 名称需与 TapData 平台上的连接名保持一致（大写，空格替换为下划线）。
+**格式 3 — DSN + PASSWORD：**
+
+| 类型 | 名称 | 示例 |
+|-----|-----|------|
+| Variable | `{CONNECTION}_DSN` | MongoDB：`ORDERS_MONGO_DSN` = `mongodb://tapuser:@mongo-sit.internal:27017/orders_sit?replicaSet=rs0` |
+| Variable | `{CONNECTION}_DSN` | JDBC：`SOURCE_DB_A_DSN` = `readonly@10.0.1.10:5432/orders_sit` |
+| Secret | `{CONNECTION}_PASSWORD` | `ORDERS_MONGO_PASSWORD` = `s3cr3t` |
+
+DSN 的写法要点：
+
+- **密码位必须留空。** `user:@host:5432/db` 与 `user@host:5432/db` 都可以，冒号写不写都行；**密码单独放 Secret**。
+- **JDBC 三种写法完全等价**，随便挑一种：`readonly@10.0.1.10:5432/orders` ／ `jdbc:postgresql://readonly@10.0.1.10:5432/orders` ／ `postgresql://readonly@10.0.1.10:5432/orders`。前缀只是为了写着顺手，**会被丢弃、也不用来判断数据库类型**（类型取自连接本身）——所以在一条 PostgreSQL 连接上写 `jdbc:mysql://` 不会报错，但也没有任何意义。
+- **MongoDB 按 mongodb URI 原样写**，整串保留：副本集种子列表、`replicaSet=`、`authSource=`、`mongodb+srv://` 都支持。
+- **JDBC 的 `?` 参数本期会被丢弃**（如 `?currentSchema=other`），并在导入日志里给一条点名告警；这类参数仍取导出包里的既有值。**MongoDB 的 query 参数不受此限**，照常保留。
+- **`{CONNECTION}_PASSWORD` 可以不配**（无密码连接）。此时不报错、部署照常，日志会给一条逐字点名 `{CONNECTION}_PASSWORD` 的告警，目标环境的既有密码**不会被抹空**。
+- **DSN 里漏写用户名或库名**也不报错：保留目标环境的既有值 + 一条点名告警。
+
+> ⚠ **DSN 里绝不能带真实密码。** 带非空密码会**直接报错**、中止本次部署，且报错消息不会回显 DSN 原文（Variable 不打码，回显等于把密码永久写进日志）。
+>
+> **万一已经粘进去过：唯一的补救是轮换该密码**。删掉变量不回收任何东西——它已经躺在变量历史、REST API 和所有协作者眼前了。
+
+#### 5.4.4 从旧格式迁移到格式 3
+
+只有"库名要逐环境不同"才需要迁移；其余情况旧格式继续用，行为逐字不变。
+
+1. **先确认目标环境的 TapData 已升级到支持格式 3 的版本。** ⚠ 老版本遇到只配了 `_DSN` 的连接会**中断整次导入**（不是跳过这一条），而触发它的是"改一个 GitHub 变量"这个动作，没有任何版本门会拦住。**每个环境分别升级、分别确认**。
+2. **先加新键，再删旧键。** 加上 `{CONNECTION}_DSN` 后，新旧键会共存一段时间——这期间**格式 3 赢**（它排在最前），可以先跑一次部署验证无误，再删掉旧的 `{CONNECTION}_URI` 或三件套。
+3. ⚠ **不要顺手删掉 `DEFAULT_PASSWORD`。** 两个键的作用域是**不对称**的：`{CONNECTION}_DSN` 只认精确连接名（回落会连错库，是数据事故），但 `{CONNECTION}_PASSWORD` **仍然允许**回落到截断前缀和 `DEFAULT_PASSWORD`。正在用 `DEFAULT_PASSWORD` 的仓库，迁移时保留它即可，不必给每条连接单配密码。
+4. **迁移后逐环境核对库名。** 格式 3 下库名由变量决定 ⇒ 每个环境的 `_DSN` 都要写对自己的库名，且**回滚不会把库名回滚回去**。
 
 ### 5.5 创建 GitHub Environments
 
@@ -661,7 +716,7 @@ Rollback 严格按照"目标环境 × 项目名"双维度隔离，互不干扰�
 
 ### 10.5 vault.json 生成失败 / 连接凭据错误
 
-- GitHub Secrets 命名与 TapData 连接名称不匹配 → 按 `{ENV}_{CONNECTION}_URL` 格式检查
+- GitHub Secrets / Variables 命名与 TapData 连接名称不匹配 → 按 `{CONNECTION}_DSN` / `{CONNECTION}_URI` / `{CONNECTION}_URL` 检查（连接级键名**不带环境前缀**，见 5.4.2）
 - 确认 Secret 设置在了正确的层级（组织级或租户仓库级）
 - 如启用 `VAULT_ENCRYPTION_KEY`，确认所有下游环境都能解密
 

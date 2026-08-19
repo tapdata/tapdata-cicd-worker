@@ -443,26 +443,65 @@ jobs:
 
 ### 6.3 配置数据库凭据
 
-在租户仓库 → **Settings** → **Secrets and variables** → **Actions**：
+在租户仓库 → **Settings** → **Secrets and variables** → **Actions**。
 
-**MongoDB 连接（URI 格式）：**
+#### 6.3.1 三种格式的选型对照
 
-| 类型 | 名称 | 示例值 |
-|-----|-----|-------|
-| Secret | `DEV_FDM_URI` | `mongodb://user:pass@dev-host:27017/fdm` |
-| Secret | `DEV_MDM_URI` | `mongodb://user:pass@dev-host:27017/mdm` |
-| Secret | `SIT_FDM_URI` | `mongodb://user:pass@sit-host:27017/fdm` |
-| Secret | `SIT_MDM_URI` | `mongodb://user:pass@sit-host:27017/mdm` |
+一条连接的凭据有三种写法，**任选其一**，可在同一仓库共存；部署时按下表次序查找、**命中即停**。
 
-**PostgreSQL 等其他连接（分字段格式）：**
+| # | 格式 | 键名与存放位置 | 覆盖到的字段 | 查找作用域 | 明文面 | 回滚语义 | 什么时候选它 |
+|---|-----|--------------|------------|----------|-------|---------|------------|
+| 1 | **URI 型** | `{CONNECTION}_URI` → **Secret** | 整串连接串（含密码）。**不含库名**——库名随导出包走 | **仅精确连接名**：无前缀截断、无 `DEFAULT` 回落 | **最小**：整串在 Secret 里，日志自动打码 | 回滚制品 ⇒ 库名一起回滚 | 存量连接**保持不动**；不建议新配 |
+| 2 | **URL + USER + PASSWORD 三件套** | `{CONNECTION}_URL`、`{CONNECTION}_USER` → **Variable**；`{CONNECTION}_PASSWORD` → **Secret** | host、port、用户名、密码。**不含库名** | 精确名 → 截断前缀（`A_B_C_D` → `A_B`）→ `DEFAULT_*` | 中：host / port / 用户名明文 | 同上 | 多条连接共用地址或凭据，靠前缀 / `DEFAULT_*` 少配几组 |
+| 3 | **DSN + PASSWORD**（本版新增） | `{CONNECTION}_DSN` → **Variable**（密码位**留空**）；`{CONNECTION}_PASSWORD` → **Secret**（**可选**） | host、port、用户名、**库名**；MongoDB 还含 `replicaSet` / `authSource` 等参数 | `{CONNECTION}_DSN` **仅精确名**；`{CONNECTION}_PASSWORD` 精确名 → 截断前缀 → `DEFAULT_PASSWORD` | **最大**：地址、库名、用户名、JDBC 参数对全部仓库协作者可读，并进 Actions 日志 | ⚠ **回滚不回滚库名**（见 6.3.4） | **库名要逐环境不同 ⇒ 只能选它**；或要求地址面可评审、可 diff |
 
-| 类型 | 名称 | 示例值 |
-|-----|-----|-------|
-| Variable | `DEV_HPI_SOURCE_URL` | `10.0.1.10:5432` |
-| Variable | `DEV_HPI_SOURCE_USER` | `readonly_user` |
-| Secret | `DEV_HPI_SOURCE_PASSWORD` | `s3cret` |
+> **只有格式 3 覆盖库名。** 格式 1 / 2 的连接库名继续随包走、跨环境相同。交付时这一条决定了客户要不要迁移：**不需要改库名就不必迁**。
 
-> **命名规则**：`{ENV}_{CONNECTION_NAME}_{字段}`。`CONNECTION_NAME` 需与 TapData 中的连接名称保持一致（大写，空格替换为下划线）。
+#### 6.3.2 键名与环境隔离
+
+**连接级键名不带环境前缀**——环境隔离靠 GitHub Environments：在 `dev` / `sit` / `lpt` / `aat` / `prod` 各自的 Environment 下配**同名**键，各自填各自环境的值。
+
+| 键类 | `{ENV}_` 前缀 | 解析方式 |
+|-----|-------------|---------|
+| 平台级 `TAPDATA_URL` / `TAPDATA_ACCESS_CODE` | **可带可不带** | 先查 `{ENV}_TAPDATA_URL`，回落到 `TAPDATA_URL`（见 6.2 组织级变量） |
+| 连接级 `_DSN` / `_URI` / `_URL` / `_USER` / `_PASSWORD` | **一律不带** | 只查 `{CONNECTION}_后缀`；写成 `DEV_FDM_URI` **查不到**，该连接会报缺配置 |
+
+**命名规则**：`CONNECTION` 需与 TapData 中的连接名称一致，脚本会**自动转大写**，空格替换为下划线。
+
+⚠ 两条约束要在交付时先扫一遍连接清单：① 大写化后重名（`foo_db` / `FOO_DB`）会共用同一组键，**格式 3 下等于共用同一个库**；② 含连字符、点、空格、中文或以 `GITHUB_` 开头的连接名**不能**用格式 3（GitHub 变量名法限制），需先在 TapData 侧改名。
+
+#### 6.3.3 配置样例
+
+**格式 1 / 2（存量）：**
+
+| 类型 | 名称 | 示例值 | 配在哪 |
+|-----|-----|-------|-------|
+| Secret | `FDM_URI` | `mongodb://user:pass@sit-host:27017/fdm` | 各 Environment 下同名配置 |
+| Secret | `MDM_URI` | `mongodb://user:pass@sit-host:27017/mdm` | 同上 |
+| Variable | `HPI_SOURCE_URL` | `10.0.1.10:5432` | 同上 |
+| Variable | `HPI_SOURCE_USER` | `readonly_user` | 同上 |
+| Secret | `HPI_SOURCE_PASSWORD` | `s3cret` | 同上 |
+
+**格式 3（新增）：**
+
+| 类型 | 名称 | 示例值（SIT Environment） |
+|-----|-----|------------------------|
+| Variable | `MDM_DSN` | `mongodb://tapuser:@sit-host:27017/mdm_sit?replicaSet=rs0` |
+| Variable | `HPI_SOURCE_DSN` | `readonly_user@10.0.1.10:5432/hpi_sit` |
+| Secret | `HPI_SOURCE_PASSWORD` | `s3cret` |
+
+- **密码位留空**：`user:@host/db` 与 `user@host/db` 都收；密码单独放 Secret。
+- **JDBC 三种写法等价**：`user@h:5432/db` ／ `jdbc:postgresql://user@h:5432/db` ／ `postgresql://user@h:5432/db`。前缀**被丢弃、不用于判型**（类型取自连接自身），故 `jdbc:mysql://` 写在 PG 连接上不报错也不告警。
+- **MongoDB 整串保留**：副本集种子列表、`replicaSet` / `authSource`、`mongodb+srv://` 均支持。
+- **JDBC 的 `?` 参数本期丢弃**并给点名告警（参数仍取包内既有值）；MongoDB 的 query 参数保留。
+- **缺值不报错**：缺 `{CONNECTION}_PASSWORD` / 缺库名 / 缺用户名 ⇒ 保留目标环境既有值 + 一条逐字点名的告警。
+- ⚠ **DSN 带真实密码 ⇒ 直接报错**并中止部署，消息不回显 DSN 原文。**已经粘进去过的唯一补救是轮换该密码**——Variable 不打码，删变量不回收任何东西。
+
+#### 6.3.4 交付时必须交代的三件事
+
+1. **升级顺序**：该环境的 TapData（TM）升级完成后，才允许创建 `_DSN` 变量。⚠ 老版本遇到只配 `_DSN` 的连接会**中断整次导入**而非跳过该条，触发动作是客户改一个 GitHub 变量、**没有版本门**。各环境分别升级、分别确认。
+2. **回滚语义**：库名搬进 Variable 后，**回滚只回滚制品、不回滚库名**——`generate-vault.sh` 读的是当前变量值。影响面是**全部五个调用点**，回滚也在内：`.github/workflows/tapdata-deploy.yml:199`、`.github/workflows/tapdata-rollback.yml:309`、`.github/deploy/tapdata-deploy-matrix.yml:199`、`.github/deploy/tapdata-deploy-multi-job.yml:210`、`.github/deploy/tapdata-deploy-matrix-artifact-v3.yml:198`。
+3. **迁移顺序与作用域不对称**：**先加新键、再删旧键**（共存期格式 3 赢，可先验证再删）；⚠ 迁移时**不要删 `DEFAULT_PASSWORD`**——`_DSN` 只认精确名，但 `_PASSWORD` 仍允许回落到截断前缀与 `DEFAULT_PASSWORD`，正在用它的仓库不必给每条连接单配密码。
 
 ### 6.4 配置 TapData 项目
 
@@ -686,7 +725,7 @@ Error: generate-vault.sh: CONNECTION_NAME secret not found
 ```
 
 原因和解决方法：
-- GitHub Secrets 命名与 TapData 连接名称不匹配 → 检查 `{ENV}_{CONNECTION_NAME}_URL` 格式
+- GitHub Secrets / Variables 命名与 TapData 连接名称不匹配 → 检查 `{CONNECTION}_DSN` / `{CONNECTION}_URI` / `{CONNECTION}_URL`（连接级键名**不带环境前缀**，见 6.3.2）
 - Secret 配置在了错误的层级（应在组织级或仓库级）→ 检查 Secret 所在位置
 
 ---
