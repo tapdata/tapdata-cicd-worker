@@ -214,6 +214,8 @@ jobs:
         if: vars.VAULT_TRANSPORT != 'local'
         continue-on-error: true
         uses: actions/upload-artifact@v3
+        env:
+          NODE_TLS_REJECT_UNAUTHORIZED: "0"
         with:
           name: vault-and-export
           path: |
@@ -271,6 +273,8 @@ jobs:
       - name: Download vault (artifact v3)
         if: needs.preparation.outputs.vault_transport == 'artifact-v4'
         uses: actions/download-artifact@v3
+        env:
+          NODE_TLS_REJECT_UNAUTHORIZED: "0"
         with:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export
@@ -359,6 +363,8 @@ jobs:
       - name: Download vault (artifact v3)
         if: needs.preparation.outputs.vault_transport == 'artifact-v4'
         uses: actions/download-artifact@v3
+        env:
+          NODE_TLS_REJECT_UNAUTHORIZED: "0"
         with:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export
@@ -580,6 +586,8 @@ jobs:
       - name: Download vault (artifact v3)
         if: needs.preparation.outputs.vault_transport == 'artifact-v4'
         uses: actions/download-artifact@v3
+        env:
+          NODE_TLS_REJECT_UNAUTHORIZED: "0"
         with:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export
@@ -665,6 +673,8 @@ jobs:
       - name: Download vault (artifact v3)
         if: needs.preparation.outputs.vault_transport == 'artifact-v4'
         uses: actions/download-artifact@v3
+        env:
+          NODE_TLS_REJECT_UNAUTHORIZED: "0"
         with:
           name: vault-and-export
           path: ${{ env.PROJECT }}_tapdata_export

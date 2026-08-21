@@ -88,15 +88,25 @@ for WF in "${LIVE}" "${VARIANTS[@]}"; do
   else fail "${NAME}: APIs row carries the index-only note"; fi
 done
 
-# Parity: a variant may differ from the live workflow only in comments and the artifact
-# action major version. Anything else means the copies have drifted -- which is exactly how
-# the leg went missing in the first place. Widening this whitelist is a deliberate act.
+# Parity: a variant may differ from the live workflow only in comments, the artifact
+# action major version, and the TLS opt-out that rides along with it. Anything else means the
+# copies have drifted -- which is exactly how the leg went missing in the first place.
+# Widening this whitelist is a deliberate act.
+#
+# NODE_TLS_REJECT_UNAUTHORIZED belongs to the v3 variant alone and must never reach the live
+# workflow: the artifact actions are the only Node-based steps that talk to the GHES over
+# HTTPS, and that GHES serves a self-signed certificate. Turning certificate verification off
+# on github.com would be a downgrade bought for nothing. The `> ` anchors matter -- a variant
+# ADDING these lines is expected, the live workflow growing them is not, and neither is a
+# variant LOSING an env block the live workflow has.
 parity_diff() {
   diff "${LIVE}" "$1" | grep '^[<>]' \
     | grep -vE '^[<>] *#' \
     | grep -vE '^[<>] name: ' \
     | grep -vE 'actions/(upload|download)-artifact@v[0-9]+' \
-    | grep -vE 'name: (Upload|Download) vault \(artifact v[0-9]+\)'
+    | grep -vE 'name: (Upload|Download) vault \(artifact v[0-9]+\)' \
+    | grep -vE '^> *env:$' \
+    | grep -vE '^> *NODE_TLS_REJECT_UNAUTHORIZED: '
 }
 for WF in "${VARIANTS[@]}"; do
   NAME="$(basename "${WF}")"
