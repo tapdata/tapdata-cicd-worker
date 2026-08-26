@@ -119,6 +119,25 @@ for WF in "${VARIANTS[@]}"; do
   fi
 done
 
+# run-name parity across EVERY deploy copy, including the two the diff above does not cover
+# (multi-job variant + the tenant-side callers). The caller's run-name is the one GitHub actually
+# displays for a run, so a copy left behind here is invisible drift: the run still succeeds, it
+# just stops naming the PR it deployed.
+RUNNAME_FILES=(
+  "${LIVE}"
+  "${VARIANTS[@]}"
+  "${ROOT}/.github/deploy/tapdata-deploy-multi-job.yml"
+  "${ROOT}/tenant-template/.github/workflows/tapdata-deploy.yml"
+  "${ROOT}/tenant-template/.github/disabled/tapdata-deploy.yml"
+)
+DISTINCT=$(for f in "${RUNNAME_FILES[@]}"; do grep -m1 '^run-name:' "${f}"; done | sort -u | wc -l | tr -d ' ')
+if [[ "${DISTINCT}" == "1" ]] && grep -q 'github.event.pull_request.title || github.event.head_commit.message' "${LIVE}"; then
+  pass "all deploy copies share one run-name, and it carries the PR title"
+else
+  fail "deploy run-name drift (${DISTINCT} distinct) or PR title missing:"
+  for f in "${RUNNAME_FILES[@]}"; do echo "        $(basename "${f}"): $(grep -m1 '^run-name:' "${f}")"; done
+fi
+
 echo ""
 if [[ "${FAILS}" -eq 0 ]]; then
   echo "All tests passed."
