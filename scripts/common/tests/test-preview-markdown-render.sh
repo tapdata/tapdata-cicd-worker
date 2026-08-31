@@ -177,5 +177,101 @@ else
 fi
 teardown
 
+# Test 9/10: the "customerQuery" spelling. TM stores the API path name as "customerQuery"
+# (客户查询) where it means "custom query" (自定义查询). That value is apiserver's runtime
+# contract -- controller.ts.ejs picks partials/customerQuery.ejs by it, and it surfaces as the
+# OpenAPI x-operation-name -- so it cannot be renamed. Only this plan table is corrected.
+setup
+export STUB_BODY='{"code":"ok","data":{"add":[],"delete":[],"update":[
+ {"name":"API_PATIENT","changes":[
+  {"field":"paths[customerQuery].fields[ccCodes]","from":"cc","to":null},
+  {"field":"fields[CUSTOMER_NO]","from":"a","to":"b"},
+  {"field":"paths[customerQuery].fields[customerName]","from":"x","to":"y"}
+ ]}]}}'
+bash "${SUT}" apis >/dev/null 2>&1
+
+# 9: the path segment is displayed corrected.
+if grep -q 'paths\[customQuery\]' "${GITHUB_STEP_SUMMARY}" && ! grep -q 'paths\[customerQuery\]' "${GITHUB_STEP_SUMMARY}"; then
+  pass "paths[customerQuery] 展示成 paths[customQuery]"
+else
+  fail "路径段没改对，摘要里是：$(grep -o 'paths\[[a-zA-Z]*\]' "${GITHUB_STEP_SUMMARY}" | sort -u | tr '\n' ' ')"
+fi
+
+# 10: THE discriminating one -- a blunt gsub("customer";"custom") passes test 9 and fails here.
+# CUSTOMER_NO / customerName are the user's own field names; rewriting them makes the plan
+# table describe a change other than the one being deployed.
+if grep -q 'fields\[CUSTOMER_NO\]' "${GITHUB_STEP_SUMMARY}" && grep -q 'fields\[customerName\]' "${GITHUB_STEP_SUMMARY}"; then
+  pass "用户自己的 CUSTOMER_NO / customerName 字段原样保留"
+else
+  fail "把用户的真实字段名一起改了——摘要里的字段：$(grep -o 'fields\[[a-zA-Z_]*\]' "${GITHUB_STEP_SUMMARY}" | sort -u | tr '\n' ' ')"
+fi
+teardown
+
+# ---------------------------------------------------------------------------
+# Same-source row merge. Renaming one field writes it into BOTH Module.fields
+# (the table's full field list) and Module.paths[].fields (the subset the user
+# ticked for the API), so one edit renders as two identical rows. Merging them
+# is only safe when from/to match exactly -- the two lists are NOT the same set.
+# ---------------------------------------------------------------------------
+
+# Test 11: Martin's actual case -- ccCodes renamed to ccCodesV3. 4 rows collapse to 2,
+# and the <summary> count must follow, or the header contradicts the table under it.
+setup
+export STUB_BODY='{"code":"ok","data":{"add":[],"delete":[],"update":[
+ {"name":"API_PATIENT","changes":[
+  {"field":"fields[ccCodes]","from":"{\"field_name\":\"ccCodes\"}","to":null},
+  {"field":"fields[ccCodesV3]","from":null,"to":"{\"field_name\":\"ccCodesV3\"}"},
+  {"field":"paths[customerQuery].fields[ccCodes]","from":"{\"field_name\":\"ccCodes\"}","to":null},
+  {"field":"paths[customerQuery].fields[ccCodesV3]","from":null,"to":"{\"field_name\":\"ccCodesV3\"}"},
+  {"field":"tableName","from":"MDM_PATIENT_V2","to":"MDM_PATIENT_V3"}
+ ]}]}}'
+bash "${SUT}" apis >/dev/null 2>&1
+PATH_ROWS=$(grep -c 'paths\[custom' "${GITHUB_STEP_SUMMARY}" || true)
+if [[ "${PATH_ROWS}" -eq 0 ]] && grep -q 'fields\[ccCodesV3\]' "${GITHUB_STEP_SUMMARY}"; then
+  pass "同源行合并：重命名的 paths[] 重复行被去掉，顶层行保留"
+else
+  fail "还剩 ${PATH_ROWS} 行 paths[...] 重复行"
+fi
+if grep -q '(3 changes)' "${GITHUB_STEP_SUMMARY}"; then
+  pass "summary 计数跟着合并后的行数走（3 changes）"
+else
+  fail "summary 计数没跟上：$(grep -o '([0-9]* changes\?)' "${GITHUB_STEP_SUMMARY}" | head -1)"
+fi
+teardown
+
+# Test 12: THE discriminating one. The user UNTICKED a field: it leaves
+# paths[].fields but stays in the table's full Module.fields, so ONLY the paths row
+# exists. Dropping paths rows wholesale (what was originally proposed) renders this
+# as "no changes" -- the approver green-lights a deploy that silently stops exposing
+# a field. The row must survive precisely because it has no identical top-level peer.
+setup
+export STUB_BODY='{"code":"ok","data":{"add":[],"delete":[],"update":[
+ {"name":"API_PATIENT","changes":[
+  {"field":"paths[customerQuery].fields[SSN]","from":"{\"field_name\":\"SSN\"}","to":null}
+ ]}]}}'
+bash "${SUT}" apis >/dev/null 2>&1
+if grep -q 'fields\[SSN\]' "${GITHUB_STEP_SUMMARY}"; then
+  pass "取消勾选：没有同源顶层行时，paths 行必须保留（否则计划显示成无变更）"
+else
+  fail "取消勾选的字段在计划表里消失了——审批的人会看到「无变更」：$(grep -o 'fields\[[A-Za-z_]*\]' "${GITHUB_STEP_SUMMARY}" | tr '\n' ' ')"
+fi
+teardown
+
+# Test 13: same field name at both levels but DIFFERENT values -- not the same edit,
+# so nothing may be merged away. Guards a signature check that compares only .field.
+setup
+export STUB_BODY='{"code":"ok","data":{"add":[],"delete":[],"update":[
+ {"name":"API_PATIENT","changes":[
+  {"field":"fields[age]","from":"int","to":"long"},
+  {"field":"paths[customerQuery].fields[age]","from":"int","to":"string"}
+ ]}]}}'
+bash "${SUT}" apis >/dev/null 2>&1
+if grep -q 'paths\[customQuery\].fields\[age\]' "${GITHUB_STEP_SUMMARY}" && grep -q '| `fields\[age\]` |' "${GITHUB_STEP_SUMMARY}"; then
+  pass "from/to 不一致时两行都保留（不是同一次改动）"
+else
+  fail "值不同却被合并了——丢掉了一处真实差异"
+fi
+teardown
+
 echo
 if [[ "${FAILS}" -eq 0 ]]; then echo "All tests passed."; else echo "${FAILS} test(s) failed."; exit 1; fi

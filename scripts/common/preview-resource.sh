@@ -277,7 +277,24 @@ MARKDOWN_TMPFILE=$(mktemp)
       else
         # Resource name and top-level changes
         (.name // .id // "unknown") as $name |
-        (.changes // []) as $changes |
+        (.changes // []) as $rawChanges |
+
+        # 同源行合并：一次字段改动会同时落在顶层 fields[X] 和 paths[P].fields[X] 上，
+        # 于是 1 个改动渲染成 2 行。两边 from/to 完全一致时只保留顶层那行。
+        #
+        # 只在「完全一致」时合并，是这条规则唯一安全的形态：两份清单语义并不相同 ——
+        # 顶层 fields 是表的全量字段，paths[].fields 是用户在页面上勾选的对外暴露子集
+        # （Drawer.vue: formData.fields = allFields vs paths[].fields = currentCheckedFields()）。
+        # 取消勾选某个字段时只有 paths 那行会变，它必须留下，否则部署计划会把
+        # 「这个 API 不再对外发某字段」显示成「无变更」。
+        ($rawChanges | map(.field + "\u0000" + (.from | tojson) + "\u0000" + (.to | tojson))) as $sigs |
+        ($rawChanges | map(
+          . as $c |
+          ($c.field | sub("^paths\\[[^\\]]*\\]\\."; "")) as $peerField |
+          if ($peerField != $c.field)
+             and (($sigs | index($peerField + "\u0000" + ($c.from | tojson) + "\u0000" + ($c.to | tojson))) != null)
+          then empty else $c end
+        )) as $changes |
         (.dagChangeDetail // {}) as $dag |
         ($dag.nodeAdditions // []) as $nodeAdds |
         ($dag.nodeRemovals // []) as $nodeDels |
@@ -289,9 +306,18 @@ MARKDOWN_TMPFILE=$(mktemp)
         "<details>\n<summary><code>\($name)</code> (\($total) change\(if $total == 1 then "" else "s" end))</summary>\n" +
 
         # Top-level changes table
+        #
+        # 展示层修正：TM 存的 API 路径名是 "customerQuery"（客户查询），但它表达的是
+        # "custom query"（自定义查询）—— 拼写从一开始就错了。那个值是 apiserver 的
+        # 运行期契约（按它选代码生成模板、暴露成 OpenAPI operation name），动不得，
+        # 所以只在这里把展示改对。
+        #
+        # 必须锚定整个 "paths[customerQuery]" 段，不能只替换 "customer" 子串：
+        # 用户自己的字段常带 CUSTOMER（fields[CUSTOMER_NO]、fields[customerName]），
+        # 那些是真实数据，改了就是在计划表里撒谎。
         if ($changes | length) > 0 then
           "\n**Config Changes**\n\n| Field | From | To |\n| --- | --- | --- |\n" +
-          ($changes | map("| `\(.field)` | `\(if .from == null or .from == "" then "-" else .from end)` | `\(if .to == null or .to == "" then "-" else .to end)` |") | join("\n")) + "\n"
+          ($changes | map("| `\(.field | gsub("paths\\[customerQuery\\]"; "paths[customQuery]"))` | `\(if .from == null or .from == "" then "-" else .from end)` | `\(if .to == null or .to == "" then "-" else .to end)` |") | join("\n")) + "\n"
         else "" end +
 
         # Node additions
