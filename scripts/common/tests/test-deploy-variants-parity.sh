@@ -131,10 +131,16 @@ RUNNAME_FILES=(
   "${ROOT}/tenant-template/.github/disabled/tapdata-deploy.yml"
 )
 DISTINCT=$(for f in "${RUNNAME_FILES[@]}"; do grep -m1 '^run-name:' "${f}"; done | sort -u | wc -l | tr -d ' ')
-if [[ "${DISTINCT}" == "1" ]] && grep -q 'github.event.pull_request.title || github.event.head_commit.message' "${LIVE}"; then
-  pass "all deploy copies share one run-name, and it carries the PR title"
+# The PR title must stay at the TAIL. It resolves to github.event.head_commit.message on push, which
+# is the WHOLE message (subject + body) -- GitHub expressions have no split(), so a squash commit with
+# a body runs to hundreds of characters. Leading, it pushes project/env past the truncation point in
+# the runs list; trailing, only its own tail gets cut. Hence the anchored check on the opening segment.
+if [[ "${DISTINCT}" == "1" ]] \
+  && grep -q 'github.event.pull_request.title || github.event.head_commit.message' "${LIVE}" \
+  && grep -q '^run-name: "🚀 \${{ inputs.project' "${LIVE}"; then
+  pass "all deploy copies share one run-name; it carries the PR title, and leads with project -> env"
 else
-  fail "deploy run-name drift (${DISTINCT} distinct) or PR title missing:"
+  fail "deploy run-name drift (${DISTINCT} distinct), PR title missing, or title moved off the tail:"
   for f in "${RUNNAME_FILES[@]}"; do echo "        $(basename "${f}"): $(grep -m1 '^run-name:' "${f}")"; done
 fi
 
