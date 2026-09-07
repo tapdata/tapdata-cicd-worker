@@ -152,6 +152,7 @@ WARN_NO_DATABASE="does not carry a database name"
 WARN_NO_DATABASE_KEPT="existing database name will be kept"
 WARN_NO_DATABASE_LIE="the source environment's"
 WARN_NO_PASSWORD="no password configured"
+WARN_EXTRA_SEGMENTS="only the first two are read"
 
 L1="user@localhost:3306/test"
 L2="jdbc:mysql://user@localhost:3306/test"
@@ -160,6 +161,8 @@ L5="mongodb://tapuser:@h:27017/orders?authSource=admin"
 L8="user:realpw@localhost:3306/test"
 L9="mongodb://u:realpw@h:27017/db"
 L10="localhost:3306"
+L13="user@pg.sit:5432/orders/app"        # PG 型：库 + schema，合法
+L14="user@pg.sit:5432/orders/app/extra"  # 三段，一定是写错了
 
 echo "--- format 3 (expected RED until T2) ---"
 
@@ -271,6 +274,48 @@ if [[ ${RC} -eq 0 ]] \
    && has "${WARN_NO_DATABASE_KEPT}" && lacks "${WARN_NO_DATABASE_LIE}"; then
   pass "T7-6c no database name: rc=0, _DSN still written, warning promises the target name is kept"
 else fail "T7-6c no database name: rc=0, _DSN still written, warning promises the target name is kept" "rc=${RC}"; fi
+teardown
+
+# --- T7-6f: two path segments (database/schema) is legal, no extra warning ---
+# The PG shape. The worker cannot tell a schema-carrying connector from a
+# schema-less one, so two segments must pass quietly here; TM is the side that
+# knows whether the connection's definition actually has a schema property.
+setup
+mkconn "orders_pg"
+export ALL_VARS="$(jq -n --arg d "${L13}" '{ORDERS_PG_DSN:$d}')"
+export ALL_SECRETS='{"ORDERS_PG_PASSWORD":"pw"}'
+run_sut
+if [[ ${RC} -eq 0 ]] \
+   && [[ "$(vault_val ORDERS_PG_DSN)" == "${L13}" ]] \
+   && lacks "${WARN_EXTRA_SEGMENTS}" && lacks "${WARN_NO_DATABASE}"; then
+  pass "T7-6f database/schema: rc=0, DSN verbatim, no spurious warning"
+else fail "T7-6f database/schema: rc=0, DSN verbatim, no spurious warning" "rc=${RC}"; fi
+teardown
+
+# --- T7-6g: three or more path segments warns (but never fails the deploy) ---
+setup
+mkconn "orders_pg"
+export ALL_VARS="$(jq -n --arg d "${L14}" '{ORDERS_PG_DSN:$d}')"
+export ALL_SECRETS='{"ORDERS_PG_PASSWORD":"pw"}'
+run_sut
+if [[ ${RC} -eq 0 ]] \
+   && [[ "$(vault_val ORDERS_PG_DSN)" == "${L14}" ]] \
+   && has "::warning::" && has "${WARN_EXTRA_SEGMENTS}" && has "3 path segments"; then
+  pass "T7-6g three segments: warns and names the count, DSN still written verbatim"
+else fail "T7-6g three segments: warns and names the count, DSN still written verbatim" "rc=${RC}"; fi
+teardown
+
+# --- T7-6h: MongoDB's empty path segment must not be counted ----------------
+# `mongodb://u:@h:27017/?replicaSet=rs0` has a slash, a query string and zero
+# real segments. Counting the empty one would make every replica-set DSN warn.
+setup
+mkconn "orders_mongo"
+export ALL_VARS="$(jq -n --arg d "mongodb://tapuser:@h1:27017,h2:27017/?replicaSet=rs0" '{ORDERS_MONGO_DSN:$d}')"
+export ALL_SECRETS='{"ORDERS_MONGO_PASSWORD":"pw"}'
+run_sut
+if [[ ${RC} -eq 0 ]] && lacks "${WARN_EXTRA_SEGMENTS}"; then
+  pass "T7-6h mongo empty path segment: no extra-segment warning"
+else fail "T7-6h mongo empty path segment: no extra-segment warning" "rc=${RC}"; fi
 teardown
 
 # --- T7-6d: the password half DOES fall back to DEFAULT_PASSWORD ------------

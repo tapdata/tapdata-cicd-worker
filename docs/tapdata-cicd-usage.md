@@ -375,7 +375,7 @@ git push origin main
 |---|-----|--------------|------------|----------|-------|---------|------------|
 | 1 | **URI 型** | `{CONNECTION}_URI` → **Secret** | 整串连接串（含密码）。**不含库名**——库名随导出包走 | **仅精确连接名**：无前缀截断、无 `DEFAULT` 回落 | **最小**：整串都在 Secret 里，Actions 日志自动打码 | 回滚制品 ⇒ 库名一起回滚 | 已经在用、且不需要跨环境改库名 ⇒ **保持不动**。不建议新配 |
 | 2 | **URL + USER + PASSWORD 三件套** | `{CONNECTION}_URL`、`{CONNECTION}_USER` → **Variable**；`{CONNECTION}_PASSWORD` → **Secret** | host、port、用户名、密码。**不含库名** | 精确名 → 截断前缀（第 2 个 `_` 之前，`A_B_C_D` → `A_B`）→ `DEFAULT_*` | 中：host / port / 用户名明文可见 | 同上 | 多条连接共用同一套地址或凭据，想靠前缀 / `DEFAULT_*` 少配几组时 |
-| 3 | **DSN + PASSWORD**（本版新增） | `{CONNECTION}_DSN` → **Variable**（密码位**留空**）；`{CONNECTION}_PASSWORD` → **Secret**（**可选**） | host、port、用户名、**库名**、密码；MongoDB 还含 `replicaSet` / `authSource` 等 query 参数 | `{CONNECTION}_DSN` **仅精确连接名**；`{CONNECTION}_PASSWORD` 精确名 → 截断前缀 → `DEFAULT_PASSWORD` | **最大**：地址、库名、用户名、JDBC 参数对**所有有本仓读权限的人**可见，并会进 Actions 日志 | ⚠ **回滚不回滚库名**：脚本读的是**当前**变量值，回滚制品后库名仍是新的那个 | **要让库名逐环境不同 ⇒ 只能选它**；或希望地址面可评审、可 diff |
+| 3 | **DSN + PASSWORD**（本版新增） | `{CONNECTION}_DSN` → **Variable**（密码位**留空**）；`{CONNECTION}_PASSWORD` → **Secret**（**可选**） | host、port、用户名、**库名**、**schema**（有 schema 的连接器）、密码；MongoDB 还含 `replicaSet` / `authSource` 等 query 参数 | `{CONNECTION}_DSN` **仅精确连接名**；`{CONNECTION}_PASSWORD` 精确名 → 截断前缀 → `DEFAULT_PASSWORD` | **最大**：地址、库名、用户名、JDBC 参数对**所有有本仓读权限的人**可见，并会进 Actions 日志 | ⚠ **回滚不回滚库名**：脚本读的是**当前**变量值，回滚制品后库名仍是新的那个 | **要让库名逐环境不同 ⇒ 只能选它**；或希望地址面可评审、可 diff |
 
 > **只有格式 3 能覆盖库名。** 格式 1 / 2 的连接，库名继续从导出包里带过来、跨环境相同。
 >
@@ -417,16 +417,18 @@ git push origin main
 |-----|-----|------|
 | Variable | `{CONNECTION}_DSN` | MongoDB：`ORDERS_MONGO_DSN` = `mongodb://tapuser:@mongo-sit.internal:27017/orders_sit?replicaSet=rs0` |
 | Variable | `{CONNECTION}_DSN` | JDBC：`SOURCE_DB_A_DSN` = `readonly@10.0.1.10:5432/orders_sit` |
+| Variable | `{CONNECTION}_DSN` | JDBC 带 schema（PG 系）：`HPI_PG_DSN` = `readonly@10.0.1.10:5432/orders_sit/app` |
 | Secret | `{CONNECTION}_PASSWORD` | `ORDERS_MONGO_PASSWORD` = `s3cr3t` |
 
 DSN 的写法要点：
 
 - **密码位必须留空。** `user:@host:5432/db` 与 `user@host:5432/db` 都可以，冒号写不写都行；**密码单独放 Secret**。
 - **JDBC 三种写法完全等价**，随便挑一种：`readonly@10.0.1.10:5432/orders` ／ `jdbc:postgresql://readonly@10.0.1.10:5432/orders` ／ `postgresql://readonly@10.0.1.10:5432/orders`。前缀只是为了写着顺手，**会被丢弃、也不用来判断数据库类型**（类型取自连接本身）——所以在一条 PostgreSQL 连接上写 `jdbc:mysql://` 不会报错，但也没有任何意义。
+- **有 schema 的连接器（PostgreSQL 系）把 schema 写成第二段**：`user@h:5432/database/schema`。只有库名的连接器（MySQL 等）**不写第二段**；写了也不报错——库名仍按第一段解析，多出来那段被忽略并在导入日志里点名。**三段以上一定是写错了**，生成 vault 时就会告警。
 - **MongoDB 按 mongodb URI 原样写**，整串保留：副本集种子列表、`replicaSet=`、`authSource=`、`mongodb+srv://` 都支持。
-- **JDBC 的 `?` 参数本期会被丢弃**（如 `?currentSchema=other`），并在导入日志里给一条点名告警；这类参数仍取导出包里的既有值。**MongoDB 的 query 参数不受此限**，照常保留。
+- **JDBC 的 `?` 参数本期会被丢弃**（如 `?currentSchema=other`——要指定 schema 请用上面的第二段写法 `/database/schema`，query 串不生效），并在导入日志里给一条点名告警；这类参数仍取导出包里的既有值。**MongoDB 的 query 参数不受此限**，照常保留。
 - **`{CONNECTION}_PASSWORD` 可以不配**（无密码连接）。此时不报错、部署照常，日志会给一条逐字点名 `{CONNECTION}_PASSWORD` 的告警，目标环境的既有密码**不会被抹空**。
-- **DSN 里漏写用户名或库名**也不报错：保留目标环境的既有值 + 一条点名告警。
+- **DSN 里漏写用户名、库名或 schema**都不报错：保留目标环境的既有值 + 一条点名告警。⚠ 这条对 schema 同样重要——包里带的是**源环境**的 schema（它不算凭据、导出不脱敏），不保留就会把上一个环境的 schema 盖到目标环境上，而部署照样报绿。
 
 > ⚠ **DSN 里绝不能带真实密码。** 带非空密码会**直接报错**、中止本次部署，且报错消息不会回显 DSN 原文（Variable 不打码，回显等于把密码永久写进日志）。
 >

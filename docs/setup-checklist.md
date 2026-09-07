@@ -188,7 +188,7 @@ Configure at tenant repo > **Settings** > **Secrets and variables** > **Actions*
 |---|--------|--------------------------|----------------|--------------|-------------------|--------------------|-----------------|
 | 1 | **URI** | `{CONNECTION}_URI` → **Secret** | Whole connection string (password included). **No database name** — that travels with the export bundle | **Exact connection name only**: no prefix truncation, no `DEFAULT` fallback | **Smallest**: the whole string is a Secret, masked in Actions logs | Rolling back the artifact rolls the database name back too | Existing connections that don't need a per-environment database name — **leave them alone**. Not recommended for new setups |
 | 2 | **URL + USER + PASSWORD** | `{CONNECTION}_URL`, `{CONNECTION}_USER` → **Variable**; `{CONNECTION}_PASSWORD` → **Secret** | host, port, user, password. **No database name** | Exact name → truncated prefix (before the 2nd `_`, `A_B_C_D` → `A_B`) → `DEFAULT_*` | Medium: host / port / user are plaintext | Same as above | Several connections share one address or credential and you want `DEFAULT_*` / prefix fallback to save keys |
-| 3 | **DSN + PASSWORD** (new) | `{CONNECTION}_DSN` → **Variable** (password position left **empty**); `{CONNECTION}_PASSWORD` → **Secret** (**optional**) | host, port, user, **database name**; MongoDB also keeps `replicaSet` / `authSource` and other query params | `{CONNECTION}_DSN` **exact name only**; `{CONNECTION}_PASSWORD` exact → truncated prefix → `DEFAULT_PASSWORD` | **Largest**: address, database name, user and JDBC params are readable by every collaborator with repo read access, and land in Actions logs | ⚠ **Rollback does not roll back the database name** — the script reads the *current* variable value | **A per-environment database name is only possible here.** Also pick it when you want the address surface reviewable and diffable |
+| 3 | **DSN + PASSWORD** (new) | `{CONNECTION}_DSN` → **Variable** (password position left **empty**); `{CONNECTION}_PASSWORD` → **Secret** (**optional**) | host, port, user, **database name**, **schema** (connectors that have one); MongoDB also keeps `replicaSet` / `authSource` and other query params | `{CONNECTION}_DSN` **exact name only**; `{CONNECTION}_PASSWORD` exact → truncated prefix → `DEFAULT_PASSWORD` | **Largest**: address, database name, user and JDBC params are readable by every collaborator with repo read access, and land in Actions logs | ⚠ **Rollback does not roll back the database name** — the script reads the *current* variable value | **A per-environment database name is only possible here.** Also pick it when you want the address surface reviewable and diffable |
 
 **Key naming — no environment prefix on connection keys:**
 
@@ -207,12 +207,14 @@ Environment isolation comes from GitHub Environments: configure the **same** key
 |---|---|---|
 | Variable | `MDM_DSN` | `mongodb://tapuser:@host:27017/mdm_sit?replicaSet=rs0` |
 | Variable | `HPI_SOURCE_DSN` | `readonly@10.0.1.10:5432/hpi_sit` |
+| Variable | `HPI_PG_DSN` | `readonly@10.0.1.10:5432/hpi_sit/app` (PostgreSQL, with schema) |
 | Secret | `HPI_SOURCE_PASSWORD` | `s3cret` |
 
 - The password position must be **empty** — `user:@host/db` and `user@host/db` are both accepted. The password goes in the Secret.
 - The three JDBC spellings are equivalent: `user@h:5432/db`, `jdbc:postgresql://user@h:5432/db`, `postgresql://user@h:5432/db`. The prefix is **discarded and never used to infer the database type**.
-- MongoDB DSNs are kept whole (seed lists, `replicaSet`, `authSource`, `mongodb+srv://`). JDBC `?` params are **dropped this release** with a named warning; MongoDB query params are kept.
-- Missing `{CONNECTION}_PASSWORD`, database name, or user is **not** an error: the target's existing value is kept and a warning names exactly what was missing.
+- Connectors that have a schema (PostgreSQL and friends) take it as a **second path segment**: `user@h:5432/database/schema`. Connectors with only a database (MySQL) leave it off; writing one anyway is not an error — the database name still parses from the first segment and the extra one is ignored with a named warning. **Three or more segments is always a mistake**, and the script warns while generating the vault.
+- MongoDB DSNs are kept whole (seed lists, `replicaSet`, `authSource`, `mongodb+srv://`). JDBC `?` params are **dropped this release** with a named warning; MongoDB query params are kept. Note `?currentSchema=` is one of the dropped ones — use the `/database/schema` path segment above instead.
+- Missing `{CONNECTION}_PASSWORD`, database name, schema, or user is **not** an error: the target's existing value is kept and a warning names exactly what was missing.
 - ⚠ A DSN carrying a **real password fails the deployment**, and the error never echoes the DSN. If one was ever pasted in, the only remedy is to **rotate that password** — Variables are not masked, and deleting the variable reclaims nothing.
 
 **Before switching a connection to format 3:**

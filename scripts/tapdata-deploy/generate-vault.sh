@@ -217,6 +217,32 @@ dsn_has_database() {
   [[ -n "${rest}" ]]
 }
 
+# How many NON-EMPTY path segments the DSN carries. TM reads at most two: the
+# database name, then the schema for connectors whose definition has one (PG's
+# spec maps `schema` to apiServerKey database_owner; MySQL has no such property,
+# so a second segment there is ignored with a warning on the TM side).
+#   h:5432/orders        -> 1
+#   h:5432/orders/public -> 2
+#   h:5432/              -> 0   (the empty segment must not count -- MongoDB's
+#                                `mongodb://u:@h:27017/?replicaSet=rs0` lands here)
+# Counted with a loop rather than IFS word-splitting on purpose: an unquoted
+# expansion would also glob, and a segment containing * would silently become a
+# filename list.
+dsn_path_segments() {
+  local d path seg count=0
+  d="$(dsn_strip_prefix "$1")"
+  d="${d%%\?*}"
+  [[ "${d}" == *"/"* ]] || { printf '0'; return; }
+  path="${d#*/}"
+  while [[ -n "${path}" ]]; do
+    seg="${path%%/*}"
+    [[ -n "${seg}" ]] && count=$((count+1))
+    [[ "${path}" == *"/"* ]] || break
+    path="${path#*/}"
+  done
+  printf '%s' "${count}"
+}
+
 for conn_name in "${CONNECTION_NAMES[@]}"; do
   MATCH_TYPE=""
   FOUND_DSN=""
@@ -248,13 +274,28 @@ for conn_name in "${CONNECTION_NAMES[@]}"; do
     # wording has to hold for both outcomes: database_name is NOT in
     # SENSITIVE_API_KEYS, so it never travels the "masked field -> restore from
     # existing" path the password/userinfo rows use. TM preserves it explicitly
-    # (ResourceHandler#restoreDatabaseNameWhenDsnOmitsIt) when the target
+    # (ResourceHandler#restoreDatabaseAndSchemaWhenDsnOmitsThem) when the target
     # already has that connection; on a first deploy there is nothing to keep
     # and the package's name is used. The worker cannot tell those apart -- it
     # does not know the target's state -- so it must not promise either one
     # unconditionally.
     if ! dsn_has_database "${FOUND_DSN}"; then
       echo "::warning::Connection '${conn_name}': ${conn_name}_DSN does not carry a database name; the target environment's existing database name will be kept if that connection already exists there, otherwise the name shipped in the package is used. Put the database name in the DSN to make it environment-specific."
+    fi
+
+    # Two path segments is the schema form (host:port/database/schema). Three or
+    # more is always a typo: TM splits the path once, so everything past the
+    # second segment ends up glued into the schema value and only surfaces when
+    # the connection test fails in the target environment. Warn here, where it is
+    # still one variable edit away from being fixed.
+    #
+    # This stays a warning, not an error: the worker cannot tell a schema-carrying
+    # connector from a schema-less one (that lives in the connection's definition,
+    # which only TM can read), so it must not fail a deploy on a shape it cannot
+    # fully judge. TM names the ignored segment on its side.
+    DSN_SEGMENTS=$(dsn_path_segments "${FOUND_DSN}")
+    if [[ "${DSN_SEGMENTS}" -ge 3 ]]; then
+      echo "::warning::Connection '${conn_name}': ${conn_name}_DSN has ${DSN_SEGMENTS} path segments; only the first two are read (database name, then schema on connectors that have one) and the rest is ignored. Write it as host:port/database, or host:port/database/schema for PostgreSQL-style connections."
     fi
 
     # The password half falls back, unlike the DSN half (ADR-0036 D4).
