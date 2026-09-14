@@ -121,8 +121,8 @@ done
 
 # run-name parity across EVERY deploy copy, including the two the diff above does not cover
 # (multi-job variant + the tenant-side callers). The caller's run-name is the one GitHub actually
-# displays for a run, so a copy left behind here is invisible drift: the run still succeeds, it
-# just stops naming the PR it deployed.
+# displays for a run, so a copy left behind here is invisible drift: the run still succeeds but
+# no longer follows the shared naming policy.
 RUNNAME_FILES=(
   "${LIVE}"
   "${VARIANTS[@]}"
@@ -131,16 +131,16 @@ RUNNAME_FILES=(
   "${ROOT}/tenant-template/.github/disabled/tapdata-deploy.yml"
 )
 DISTINCT=$(for f in "${RUNNAME_FILES[@]}"; do grep -m1 '^run-name:' "${f}"; done | sort -u | wc -l | tr -d ' ')
-# The PR title must stay at the TAIL. It resolves to github.event.head_commit.message on push, which
-# is the WHOLE message (subject + body) -- GitHub expressions have no split(), so a squash commit with
-# a body runs to hundreds of characters. Leading, it pushes project/env past the truncation point in
-# the runs list; trailing, only its own tail gets cut. Hence the anchored check on the opening segment.
+# Only a real pull_request title may be appended at the tail. A push event has no pull_request field;
+# falling back to head_commit.message would append the whole subject + body and make the run name
+# unbounded. The distinct check propagates this rule to every copy.
 if [[ "${DISTINCT}" == "1" ]] \
-  && grep -q 'github.event.pull_request.title || github.event.head_commit.message' "${LIVE}" \
+  && grep -q 'github.event.pull_request.title.*format' "${LIVE}" \
+  && ! grep -m1 '^run-name:' "${LIVE}" | grep -q 'github.event.head_commit.message' \
   && grep -q '^run-name: "🚀 \${{ inputs.project' "${LIVE}"; then
-  pass "all deploy copies share one run-name; it carries the PR title, and leads with project -> env"
+  pass "all deploy copies share one run-name; it appends only a real PR title"
 else
-  fail "deploy run-name drift (${DISTINCT} distinct), PR title missing, or title moved off the tail:"
+  fail "deploy run-name drift (${DISTINCT} distinct), PR title missing, or commit fallback present:"
   for f in "${RUNNAME_FILES[@]}"; do echo "        $(basename "${f}"): $(grep -m1 '^run-name:' "${f}")"; done
 fi
 

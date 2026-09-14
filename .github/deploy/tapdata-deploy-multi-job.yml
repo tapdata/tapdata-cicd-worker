@@ -1,14 +1,9 @@
 name: TapData Deploy
-# run-name 末尾是本次部署对应的 PR 标题：Actions 列表从右侧截断，放末尾被切掉的只是它的尾巴，
-# 而 project → env 这些定长片段一定看得见。别再把它挪回最前面——push 事件取到的
-# github.event.head_commit.message 是完整 message（标题 + 正文），GH 表达式没有 split()/substring，
-# run-name 阶段拿不到首行；带正文的 squash commit（如导出 bot 那种附文件清单的）会几百字符打头，
-# 把 project → env 顶出可视宽度，正好丢掉最该看见的那截。
-# dev 部署由 PR 合入 main 触发，push 事件里没有 pull_request 字段，但 squash 合并的 commit 标题就是
-# 「PR 标题 (#N)」、merge commit 则是「Merge pull request #N from …」，两种合并方式都足以定位 PR。
-# 真·pull_request 事件（若租户日后接上）优先取 pull_request.title。tag / 手动触发没有 PR，整段连同
-# 「 · 」分隔符一起省略——🚀 本身已经是 deploy 的标识（rollback 用 ⏪），不靠文字区分。
-run-name: "🚀 ${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }} → ${{ inputs.target_env || (github.ref_type == 'tag' && 'sit' || 'dev') }} · ${{ github.event_name == 'workflow_dispatch' && format('manual by @{0}', github.actor) || (github.ref_type == 'tag' && format('tag {0}', github.ref_name) || format('branch {0}', github.ref_name)) }}${{ (github.event_name != 'workflow_dispatch' && github.ref_type != 'tag' && format(' · {0}', github.event.pull_request.title || github.event.head_commit.message)) || '' }}"
+# run-name 末尾只在事件上下文确实包含 PR 时显示 PR 标题。
+# push 事件没有 pull_request 字段；不再回退到完整的 head commit message，避免标题 + 正文
+# 把运行名称拉得过长。因此常规 main push 只显示 project → env · branch；若租户日后接入
+# pull_request 事件，则追加 pull_request.title。tag / 手动触发没有 PR，尾部整段省略。
+run-name: "🚀 ${{ inputs.project || vars.PROJECT_NAME || github.event.repository.name }} → ${{ inputs.target_env || (github.ref_type == 'tag' && 'sit' || 'dev') }} · ${{ github.event_name == 'workflow_dispatch' && format('manual by @{0}', github.actor) || (github.ref_type == 'tag' && format('tag {0}', github.ref_name) || format('branch {0}', github.ref_name)) }}${{ github.event.pull_request.title && format(' · {0}', github.event.pull_request.title) || '' }}"
 
 # 并发守卫（worker 兜底）：同 project + 同 env 的部署串行化，防止并发导入同一 TapData 项目组。
 # 独立前缀 tapdata-deploy-worker- 与租户 caller 的并发组区分，避免同一次 run 的 caller/worker 互相阻塞。
