@@ -178,13 +178,15 @@ jobs:
           TAPDATA_URL: ${{ steps.resolve_config.outputs.tapdata_url }}
           # TAPDATA_ACCESSCODE 由上一步通过 $GITHUB_ENV 注入到 Job 全局环境，无需在此显式声明
 
+      # 校验只用上面 checkout 下来的 git 工作区，不调 GitHub REST API —— 与 deploy
+      # 保持同一套仓库访问方式，github.com 和客户私有化 GHES 上行为相同。
+      # 因此这一步不再需要 CALLER_REPO / GH_TOKEN（详见脚本头部注释）。
       - name: Validate Tag Exists
         id: resolve_tag
         run: bash $SCRIPT_ROOT/scripts/tapdata-rollback/resolve-tag.sh
         env:
           LAST_STABLE_TAG: ${{ inputs.last_stable_tag }}
-          CALLER_REPO: ${{ inputs.caller_repo }}
-          GH_TOKEN: ${{ secrets.GH_DEPLOY_TOKEN }}
+          REPO_ROOT: ${{ env.REPO_ROOT }}
 
   # ============================================================
   # Job 2: Stop and Clean Resources
